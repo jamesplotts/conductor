@@ -26,7 +26,7 @@ namespace Conductor
 
         protected override string Title => _loco != null ? "Conductor: " + _loco.DisplayName : "Conductor";
 
-        public override WindowConfig Config => WindowConfig.Resizable(new Vector2Int(420, 600), new Vector2Int(340, 300), Window.Position.UpperRight);
+        public override WindowConfig Config => WindowConfig.Resizable(new Vector2Int(588, 760), new Vector2Int(340, 300), Window.Position.UpperRight);
 
         public static void Show(BaseLocomotive loco)
         {

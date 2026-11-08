@@ -67,6 +67,10 @@ namespace Conductor
             Industry industry = string.IsNullOrEmpty(industryId) ? null : OpsController.Shared?.IndustryForId(industryId);
             if (industry != null)
                 return industry.IsProgressionEnabled && industry.IsTrackReachable;
+            // A water column of no industry's: open when the station it stands at is (bought, track built).
+            PassengerStop near = Wyes.NearestStop(Point(loader));
+            if (near != null && (!near.IsProgressionEnabled || !near.IsTrackReachable))
+                return false;
             return Graph.Shared.TryGetLocationFromWorldPoint(loader.transform.position, 10f, out _);
         }
 
