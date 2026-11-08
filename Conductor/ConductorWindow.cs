@@ -75,6 +75,7 @@ namespace Conductor
                 scroll.AddField("Status", () => Status(loco), UIPanelBuilder.Frequency.Periodic);
                 scroll.AddField("Aboard", () => Aboard(loco), UIPanelBuilder.Frequency.Periodic);
                 scroll.AddField("Fuel", () => Levels(loco), UIPanelBuilder.Frequency.Periodic);
+                scroll.AddField("Condition", () => Condition(loco), UIPanelBuilder.Frequency.Periodic);
                 scroll.ButtonStrip(strip =>
                 {
                     if (!new Plan(loco).Running)
@@ -321,6 +322,16 @@ namespace Conductor
             if (by.Count > 0)
                 text += ": " + string.Join(", ", by.Select(x => $"{x.n} for {x.Name}"));
             return text;
+        }
+
+        // Each car's condition, worn ones highlighted: worn coaches cost passenger reputation.
+        private static string Condition(BaseLocomotive loco)
+        {
+            return string.Join("  ·  ", loco.EnumerateCoupled().Select(c =>
+            {
+                string text = $"{c.DisplayName} {c.Condition:P0}";
+                return Layover.NeedsWork(c) ? $"<color=#E0A040>{text}</color>" : text;
+            }));
         }
 
         private static string Levels(BaseLocomotive loco)

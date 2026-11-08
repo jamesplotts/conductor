@@ -12,8 +12,17 @@ namespace Conductor
     // Laying a train up overnight: when it's night by the train's settings, and where to park.
     internal static class Layover
     {
-        // How far from the end station to look for somewhere to park, in meters.
+        // How far from the end station to look for somewhere to park, in meters; farther for a repair
+        // track when cars need work.
         private const float Search = 3000f;
+        private const float RepairSearch = 8000f;
+        // A car needs the shop below this condition.
+        public const float WornBelow = 0.9f;
+
+        public static bool NeedsWork(Car car) => car.Condition < WornBelow || car.NeedsOiling || car.HasHotbox;
+
+        // Whether a repair track works on this kind of car (an empty filter takes any).
+        private static bool Serves(RepairTrack repair, Car car) => repair.carTypeFilter.IsEmpty || repair.carTypeFilter.Matches(car.CarType);
 
         // Night: after the last run's start time and before the resume time.
         public static bool IsNight(Plan plan)
@@ -40,27 +49,37 @@ namespace Conductor
             TrackSpan platform = stop.TrackSpans.FirstOrDefault(t => t != null);
             Vector3 at = platform != null ? platform.GetCenterPoint() : graph.GetPosition(loco.LocationF);
 
-            var shops = new List<(TrackSpan span, Industry industry, float d)>();
+            // Repair tracks, scored by how many of this train's cars they work on (engine, tender, coaches:
+            // worn coaches cost the railroad its passenger reputation). Farther afield when cars need it.
+            bool worn = train.Any(NeedsWork);
+            var shops = new List<(TrackSpan span, Industry industry, int serves, float d)>();
             foreach (RepairTrack repair in OpsController.Shared.AllIndustryComponents.OfType<RepairTrack>())
             {
                 Industry industry = repair.Industry;
-                if (industry == null || !industry.IsProgressionEnabled || !industry.IsTrackReachable || !repair.carTypeFilter.Matches(loco.CarType))
+                if (industry == null || !industry.IsProgressionEnabled || !industry.IsTrackReachable)
+                    continue;
+                int serves = train.Count(c => Serves(repair, c));
+                if (serves == 0)
                     continue;
                 foreach (TrackSpan span in repair.TrackSpans)
                 {
                     if (span == null || !span.lower.HasValue || !span.upper.HasValue || span.Length < length)
                         continue;
                     float d = Fuel.Flat(span.GetCenterPoint(), at);
-                    if (d <= Search && !Occupied(span, train))
-                        shops.Add((span, industry, d));
+                    if (d <= (worn ? RepairSearch : Search) && !Occupied(span, train))
+                        shops.Add((span, industry, serves, d));
                 }
             }
             if (shops.Count > 0)
             {
-                var shop = shops.OrderBy(s => s.d).First();
-                where = "at " + shop.industry.name;
+                var shop = shops.OrderByDescending(s => s.serves).ThenBy(s => s.d).First();
+                where = "at " + shop.industry.DisplayName;
+                if (shop.serves < train.Count)
+                    ModEntry.Log?.Info($"Conductor: {loco.DisplayName}: the repair track at {shop.industry.DisplayName} works on {shop.serves} of its {train.Count} cars.");
                 return Platforms.FarEndFor(shop.span, loco);
             }
+            if (worn)
+                ModEntry.Log?.Info($"Conductor: {loco.DisplayName} has cars needing repair but no open repair track nearby holds the whole train.");
 
             Loop siding = Turns.LoopsNear(graph, at, Search)
                 .Where(l => l.Room >= length && !Occupied(graph, l, train))
