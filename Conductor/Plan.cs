@@ -56,6 +56,9 @@ namespace Conductor
             set => _p["fuel"] = Value.String(string.Join(";", (value ?? new List<FuelStop>()).Select(f => f.LoaderId + "|" + f.LoadId)));
         }
 
+        // Use any open fuel stop on the railroad, rather than only the ones on the list.
+        public bool AnyFuelStop { get => _p["anyFuel"].BoolValueOrDefault(true); set => _p["anyFuel"] = Value.Bool(value); }
+
         // Refuel when coal, water or diesel falls below this, in percent.
         public int RefuelBelow { get => _p["refuelBelow"].IntValueOrDefault(35); set => _p["refuelBelow"] = Value.Int(value); }
         public int SpeedMph { get => _p["speed"].IntValueOrDefault(35); set => _p["speed"] = Value.Int(value); }

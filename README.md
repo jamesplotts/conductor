@@ -9,7 +9,7 @@ Conductor runs a passenger train between the stations you pick. It drives the tr
 Couple your coaches to an engine, open the engine (click it), and on the **Car** tab press **Conductor**.
 
 - **Stations:** every station on the map, in order along the line, with branches under their junction. Tick the ones to call at. The train runs them top to bottom and back; the first and last ticked are the ends of the line. Stations you can't call at yet are greyed out with the reason ("not purchased", "track not built"). The list is worked out fresh each time, so stations from an expansion show up as soon as their track is open.
-- **Fuel Stops:** press **Add Fuel Stop** and click the track beside a water spout, coal chute or diesel stand. Set **Refuel Below**. After a station, if the engine's water, coal or diesel is below that level, the train pulls up at the nearest fuel stop with the tender's filler right under the spout, fills up, tops up anything else at a stop close by, and carries on.
+- **Fuel Stops:** set **Refuel Below**. With **Use Any Open Stop** on (the default), the train uses any water spout, coal chute or diesel stand in an opened area, such as the Whittier engine shop, and later Bryson's engine house once it opens. Turn it off to pick your own with **Add Fuel Stop** (click the track beside the spout). After a station, if the engine's water, coal or diesel is below that level, the train pulls up at the nearest fuel stop with the tender's filler right under the spout, fills up, tops up anything else at a stop close by, and carries on.
 - **Speed:** how fast the Auto Engineer runs between stops.
 - **Start** begins at the nearest ticked station. **Turn Back** sends the train to the station behind it. **Stop** hands the train back to you.
 
@@ -20,7 +20,7 @@ Taking the Auto Engineer off waypoints stops Conductor for that train.
 ## Good to know
 
 - Don't run another mod that drives the same engine (Passenger Helper, Waypoint Queue) at the same time.
-- Line the switches for station tracks off the main line, as the Auto Engineer won't run through a switch set against it.
+- The Auto Engineer throws switches itself on the way, unless a car is standing on one or it is under dispatcher (CTC) control.
 - Settings and runs are saved with the game. In multiplayer, the host runs the trains; everyone sees the window.
 
 ## Install

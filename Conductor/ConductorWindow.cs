@@ -148,6 +148,22 @@ namespace Conductor
                 var p = new Plan(loco);
                 p.RefuelBelow = pct;
             }));
+            section.AddFieldToggle("Use Any Open Stop", () => new Plan(loco).AnyFuelStop, on =>
+            {
+                var p = new Plan(loco);
+                p.AnyFuelStop = on;
+                section.Rebuild();
+            }, canWrite);
+            if (plan.AnyFuelStop)
+            {
+                List<CarLoadTargetLoader> open = Fuel.Open(carried);
+                section.AddLabel(open.Count == 0
+                    ? "<size=85%>No fuel stops for this engine are open yet.</size>"
+                    : "<size=85%>After a station, if it's below the refuel level, the train pulls up at the nearest of these, fills, and carries on. New ones are used as their areas open.</size>");
+                foreach (IGrouping<string, CarLoadTargetLoader> place in open.GroupBy(Near).OrderBy(g => g.Key))
+                    section.AddField(place.Key, string.Join(", ", place.Select(l => Fuel.Describe(l.load.id)).Distinct()));
+                return;
+            }
             List<FuelStop> stops = plan.FuelStops.Where(f => carried.Contains(f.LoadId)).ToList();
             if (stops.Count == 0)
                 section.AddLabel($"<size=85%>Add the {string.Join(" and ", carried.Select(c => Fuel.Describe(c).ToLowerInvariant()))} stops this train may use. After a station, if it's below the refuel level, it pulls up at the nearest one, fills, and carries on.</size>");

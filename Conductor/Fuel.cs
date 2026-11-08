@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using Game.Messages;
 using Game.State;
 using Helpers;
@@ -25,6 +26,8 @@ namespace Conductor
 
         private static List<CarLoadTargetLoader> _loaders;
         private static List<CarLoaderSequencer> _sequencers;
+        private static float _foundAt;
+        private static readonly FieldInfo SourceIndustryId = typeof(CarLoadTargetLoader).GetField("sourceIndustryId", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
 
         public static void Forget()
         {
@@ -32,10 +35,12 @@ namespace Conductor
             _sequencers = null;
         }
 
+        // Found again every half minute: loaders in an area come to life when the area opens.
         private static List<CarLoadTargetLoader> Loaders()
         {
-            if (_loaders == null || _loaders.Any(l => l == null))
+            if (_loaders == null || _loaders.Any(l => l == null) || Time.realtimeSinceStartup - _foundAt > 30f)
             {
+                _foundAt = Time.realtimeSinceStartup;
                 _loaders = Object.FindObjectsByType<CarLoadTargetLoader>(FindObjectsSortMode.None).ToList();
                 _sequencers = Object.FindObjectsByType<CarLoaderSequencer>(FindObjectsSortMode.None).ToList();
             }
@@ -44,6 +49,26 @@ namespace Conductor
 
         public static CarLoadTargetLoader Find(string loaderId) =>
             Loaders().FirstOrDefault(l => l.keyValueObject != null && l.keyValueObject.RegisteredId == loaderId);
+
+        // Every fuel stop for these loads that a train can use now: in an opened area, on built track.
+        public static List<CarLoadTargetLoader> Open(IEnumerable<string> loads)
+        {
+            var wanted = new HashSet<string>(loads);
+            Loaders();
+            return _loaders.Where(l => l != null && l.isActiveAndEnabled && l.load != null && wanted.Contains(l.load.id) && l.keyValueObject != null
+                    && _sequencers.Any(s => s != null && s.keyValueObject != null && s.keyValueObject.RegisteredId == l.keyValueObject.RegisteredId)
+                    && IsOpen(l))
+                .ToList();
+        }
+
+        private static bool IsOpen(CarLoadTargetLoader loader)
+        {
+            string industryId = SourceIndustryId?.GetValue(loader) as string;
+            Industry industry = string.IsNullOrEmpty(industryId) ? null : OpsController.Shared?.IndustryForId(industryId);
+            if (industry != null)
+                return industry.IsProgressionEnabled && industry.IsTrackReachable;
+            return Graph.Shared.TryGetLocationFromWorldPoint(loader.transform.position, 10f, out _);
+        }
 
         // What this engine burns and drinks.
         public static List<string> LoadsFor(BaseLocomotive loco)

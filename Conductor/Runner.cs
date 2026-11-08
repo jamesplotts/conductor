@@ -288,14 +288,13 @@ namespace Conductor
             Vector3 at = Graph.Shared.GetPosition(loco.LocationF);
             CarLoadTargetLoader best = null;
             float bestDistance = float.MaxValue;
-            foreach (FuelStop stop in plan.FuelStops)
+            List<CarLoadTargetLoader> candidates = plan.AnyFuelStop ? Fuel.Open(carried)
+                : plan.FuelStops.Where(f => carried.Contains(f.LoadId)).Select(f => Fuel.Find(f.LoaderId)).Where(l => l != null).ToList();
+            foreach (CarLoadTargetLoader loader in candidates)
             {
-                if (!carried.Contains(stop.LoadId))
+                if (loader == justUsed)
                     continue;
-                CarLoadTargetLoader loader = Fuel.Find(stop.LoaderId);
-                if (loader == null || loader == justUsed)
-                    continue;
-                float level = Fuel.Level(loco, stop.LoadId);
+                float level = Fuel.Level(loco, loader.load.id);
                 if (level < 0f)
                     continue;
                 bool wanted = justUsed != null
