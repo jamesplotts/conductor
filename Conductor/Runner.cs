@@ -120,7 +120,8 @@ namespace Conductor
                     nearest = i;
                 }
             }
-            plan.Direction = nearest == route.Count - 1 ? -1 : 1;
+            // From an end the only way is back; from partway along, the way the train is going.
+            plan.Direction = nearest == 0 ? 1 : nearest == route.Count - 1 ? -1 : WayGoing(loco, route, nearest);
             plan.Running = true;
             plan.Enabled = true;
             plan.Held = false;
@@ -129,8 +130,10 @@ namespace Conductor
             if (AtStation(loco, route[nearest].Stop))
                 Arrive(loco, plan, route[nearest].Stop);
             else
-                Head(loco, plan, route[nearest].Stop);
-            Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} is running {route.First().Name} to {route.Last().Name}.");
+                Head(loco, plan, NextFromHere(loco, plan, route));
+            string toward = plan.Direction > 0 ? route.Last().Name : route.First().Name;
+            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} starting near {route[nearest].Name}, going toward {toward}.");
+            Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} is running {route.First().Name} to {route.Last().Name}, going toward {toward} first.");
             return null;
         }
 
@@ -365,7 +368,7 @@ namespace Conductor
             }
             double waited = TimeWeather.Now.TotalSeconds - plan.Since;
             List<Car> coaches = loco.EnumerateCoupled().Where(c => c.IsPassengerCar()).ToList();
-            int getting = coaches.Sum(c => (c.GetPassengerMarker() ?? PassengerMarker.Empty()).CountPassengersForStop(stop.identifier));
+            int getting = coaches.Sum(c => GettingOff(c, stop.identifier));
             HashSet<string> ahead = new HashSet<string>(Ahead(plan, route, stop.identifier));
             int waiting = ahead.Sum(stop.GetTotalWaitingForDestination);
             bool full = coaches.All(Full);
@@ -884,6 +887,27 @@ namespace Conductor
             ModEntry.Log?.Info($"Conductor: {loco.DisplayName} back on between {route[best].Name} and {route[best + 1].Name}, "
                 + $"going {(plan.Direction > 0 ? "toward " + route[route.Count - 1].Name : "toward " + route[0].Name)}: heading for {next.DisplayName} (was {plan.Station}).");
             return next;
+        }
+
+        // Passengers in a coach who get off at a station: those going there, and, as the game has it,
+        // any going somewhere the coach is no longer set to go.
+        private static int GettingOff(Car coach, string stopId)
+        {
+            PassengerMarker marker = coach.GetPassengerMarker() ?? PassengerMarker.Empty();
+            HashSet<string> going = marker.Destinations ?? new HashSet<string>();
+            return marker.Groups.Where(g => g.Destination == stopId || !going.Contains(g.Destination)).Sum(g => g.Count);
+        }
+
+        // Which way a train is going along the list from a station partway along it: the way it's
+        // moving, or when it's stopped, the way the engine faces.
+        private static int WayGoing(BaseLocomotive loco, List<Station> route, int at)
+        {
+            Graph graph = Graph.Shared;
+            Vector3 heading = graph.GetPosition(loco.LocationF) - graph.GetPosition(loco.LocationR);
+            if (Mathf.Abs(loco.velocity) > 0.5f)
+                heading *= Mathf.Sign(loco.velocity);
+            Vector3 down = Center(route[at + 1].Stop) - Center(route[at - 1].Stop);
+            return Vector3.Dot(heading, down) >= 0f ? 1 : -1;
         }
 
         // The station a fuel stop was on the way to.
