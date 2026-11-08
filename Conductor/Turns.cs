@@ -9,27 +9,38 @@ using UnityEngine;
 
 namespace Conductor
 {
-    // A passing loop: two tracks side by side between the same two switches.
+    // A passing loop: the track a train stands on between two switches, X and Y, and another way
+    // round from Y back to X for the engine to run around it. Either may have other switches along it.
     internal sealed class Loop
     {
         public TrackNode X, Y;
         // Each switch's outward track (away from the loop).
         public TrackSegment XOut, YOut;
-        public LoopTrack[] Tracks;
+        // For pulling a train in: the standing track's first segment out of X and last into Y, how
+        // much train it holds clear of both switches, and its route priority (a siding's is lower).
+        public TrackSegment AtX, AtY;
+        public float Room;
+        public int Priority;
+        // The way round, from Y to X: each segment with the node it's entered from.
+        public List<(TrackNode from, TrackSegment segment)> Around;
+        public float AroundLength;
 
         public Vector3 Center => (X.Position + Y.Position) / 2f;
-        public LoopTrack Other(LoopTrack track) => Tracks[0] == track ? Tracks[1] : Tracks[0];
-    }
+        public float AroundRoom => AroundLength - 2f * Wyes.Clearance;
 
-    internal sealed class LoopTrack
-    {
-        // The track's first segment out of X and its last segment into Y.
-        public TrackSegment AtX, AtY;
-        public HashSet<TrackSegment> Segments;
-        public float Length;
-        public int Priority;
-        // Train that fits between the switches, clear of both.
-        public float Room => Length - 2f * Wyes.Clearance;
+        // Halfway round, where the engine stops before going on out past the far switch.
+        public Location AroundMiddle(Graph graph)
+        {
+            float half = AroundLength / 2f, before = 0f;
+            foreach ((TrackNode from, TrackSegment segment) in Around)
+            {
+                float length = segment.GetLength();
+                if (before + length >= half)
+                    return Wyes.Along(graph, from, segment, half - before);
+                before += length;
+            }
+            return Wyes.Along(graph, Around[0].from, Around[0].segment, 1f);
+        }
     }
 
     // Turning a train too long for a wye's tail: it stands in a passing loop, and the engine turns on
@@ -87,17 +98,7 @@ namespace Conductor
             List<Car> coaches = cars.Skip(group).ToList();
             float powerLength = AutoEngineerPlanner.CalculateTotalLength(power);
 
-            Loop loop = null;
-            LoopTrack standing = null;
-            foreach (Loop l in LoopsNear(graph, Middle(graph, coaches), 600f))
-            {
-                standing = l.Tracks.FirstOrDefault(t => coaches.All(c => Clear(graph, l, t, c)));
-                if (standing != null)
-                {
-                    loop = l;
-                    break;
-                }
-            }
+            Loop loop = StandingIn(graph, coaches);
             if (loop == null)
             {
                 if (parked)
@@ -107,8 +108,6 @@ namespace Conductor
                 }
                 return Park(graph, loco, cars, power, powerLength, out why);
             }
-            LoopTrack around = loop.Other(standing);
-
             // F: the switch on the side the train leaves by. B: the other.
             bool xIsF = Fuel.Flat(loop.X.Position, toward) < Fuel.Flat(loop.Y.Position, toward);
             var f = new Side(loop, xIsF);
@@ -128,9 +127,9 @@ namespace Conductor
                 && !obs[obs.EndToLogical(Car.End.R)].IsCoupled;
             float obsLength = carryObs ? AutoEngineerPlanner.CalculateTotalLength(power.Concat(new[] { obs }).ToList()) : powerLength;
             float longest = Mathf.Max(powerLength, obsLength);
-            if (around.Room < longest)
+            if (loop.AroundRoom < longest)
             {
-                why = $"can't run around its train: the other track of the passing siding holds {around.Room:0} m and the engine needs {longest:0} m; running on as it is.";
+                why = $"can't run around its train: the way around the passing siding holds {loop.AroundRoom:0} m and the engine needs {longest:0} m; running on as it is.";
                 return null;
             }
             if (needTurn && wye.TailRoom < longest)
@@ -147,20 +146,20 @@ namespace Conductor
             var steps = new List<string> { Cut(power.Last(), false, "Turning: cutting off the engine") };
             if (carryObs)
             {
-                steps.AddRange(RunAround(graph, loop, around, b, f, powerLength, "fetching the observation car"));
+                steps.AddRange(RunAround(graph, loop, b, f, powerLength, "fetching the observation car"));
                 steps.Add(Couple(CouplerAt(graph, obs, f), obs, "Turning: coupling to the observation car"));
                 steps.Add(Cut(obs, false, "Turning: cutting off the observation car"));
-                steps.AddRange(Route(graph, loop, around, f, b, wyeSide, wye, needTurn, obsLength, "with the observation car"));
+                steps.AddRange(Route(graph, loop, f, b, wyeSide, wye, needTurn, obsLength, "with the observation car"));
                 Car newRear = coaches[0];
                 steps.Add(Couple(CouplerAt(graph, newRear, b), newRear, "Turning: setting the observation car on the rear"));
                 steps.Add(Cut(obs, true, "Turning: cutting off the engine"));
-                steps.AddRange(RunAround(graph, loop, around, b, f, powerLength, "running around the train"));
+                steps.AddRange(RunAround(graph, loop, b, f, powerLength, "running around the train"));
                 Car newFront = coaches[coaches.Count - 2];
                 steps.Add(Couple(CouplerAt(graph, newFront, f), newFront, "Turning: coupling on the front"));
             }
             else
             {
-                steps.AddRange(Route(graph, loop, around, engineSide, f, wyeSide, wye, needTurn, powerLength, "the engine"));
+                steps.AddRange(Route(graph, loop, engineSide, f, wyeSide, wye, needTurn, powerLength, "the engine"));
                 Car newFront = coaches.Last();
                 steps.Add(Couple(CouplerAt(graph, newFront, f), newFront, "Turning: coupling on the front"));
             }
@@ -174,31 +173,23 @@ namespace Conductor
             why = null;
             float length = AutoEngineerPlanner.CalculateTotalLength(cars);
             Vector3 at = graph.GetPosition(loco.LocationF);
-            var choices = new List<(Loop loop, LoopTrack track, float d)>();
-            foreach (Loop l in LoopsNear(graph, at, LoopSearch))
-            {
-                foreach (LoopTrack t in l.Tracks)
-                {
-                    if (t.Room >= length && l.Other(t).Room >= powerLength)
-                        choices.Add((l, t, Fuel.Flat(l.Center, at)));
-                }
-            }
+            List<Loop> choices = LoopsNear(graph, at, LoopSearch).Where(l => l.Room >= length && l.AroundRoom >= powerLength).ToList();
             if (choices.Count == 0)
             {
                 why = "is too long for the wye and there's no passing siding near enough to run around it; running on with the engine at the rear.";
                 return null;
             }
             // Nearest, and the siding rather than the main.
-            var best = choices.OrderBy(c => c.d).ThenBy(c => c.track.Priority).First();
+            Loop best = choices.OrderBy(l => Mathf.Round(Fuel.Flat(l.Center, at) / 100f)).ThenBy(l => l.Priority).First();
             // Pull in to the clear point at the far switch, so the whole train is inside.
-            bool xFar = Fuel.Flat(best.loop.X.Position, at) > Fuel.Flat(best.loop.Y.Position, at);
-            Location stop = xFar ? Wyes.Along(graph, best.loop.X, best.track.AtX, Wyes.Clearance + 2f)
-                                 : Wyes.Along(graph, best.loop.Y, best.track.AtY, Wyes.Clearance + 2f);
+            bool xFar = Fuel.Flat(best.X.Position, at) > Fuel.Flat(best.Y.Position, at);
+            Location stop = xFar ? Wyes.Along(graph, best.X, best.AtX, Wyes.Clearance + 2f)
+                                 : Wyes.Along(graph, best.Y, best.AtY, Wyes.Clearance + 2f);
             return new List<string> { Go(stop, "Turning: pulling into a siding to run around the train"), "replan" };
         }
 
         // From one end of the loop to the other, turning on the wye on the way when asked.
-        private static IEnumerable<string> Route(Graph graph, Loop loop, LoopTrack around, Side from, Side to, Side wyeSide, Wye wye, bool turn, float length, string what)
+        private static IEnumerable<string> Route(Graph graph, Loop loop, Side from, Side to, Side wyeSide, Wye wye, bool turn, float length, string what)
         {
             var steps = new List<string>();
             Side side = from;
@@ -206,7 +197,7 @@ namespace Conductor
             {
                 if (side != wyeSide)
                 {
-                    steps.AddRange(RunAround(graph, loop, around, side, wyeSide, length, "heading for the wye"));
+                    steps.AddRange(RunAround(graph, loop, side, wyeSide, length, "heading for the wye"));
                     side = wyeSide;
                 }
                 Location[] moves = WyeMoves(graph, wye, length, loop.Center);
@@ -215,15 +206,15 @@ namespace Conductor
                 steps.Add(Go(moves[2], $"Turning {what}: back out of the wye"));
             }
             if (side != to)
-                steps.AddRange(RunAround(graph, loop, around, side, to, length, "running around the train"));
+                steps.AddRange(RunAround(graph, loop, side, to, length, "running around the train"));
             return steps;
         }
 
         // Out past one switch, along the other track, and out past the far switch.
-        private static IEnumerable<string> RunAround(Graph graph, Loop loop, LoopTrack around, Side from, Side to, float length, string what)
+        private static IEnumerable<string> RunAround(Graph graph, Loop loop, Side from, Side to, float length, string what)
         {
             yield return Go(from.Beyond(graph, length), "Turning: " + what);
-            yield return Go(Wyes.Along(graph, loop.X, around.AtX, around.Length / 2f), "Turning: " + what);
+            yield return Go(loop.AroundMiddle(graph), "Turning: " + what);
             yield return Go(to.Beyond(graph, length), "Turning: " + what);
         }
 
@@ -268,73 +259,233 @@ namespace Conductor
 
         private static bool IsPower(Car car) => car.CarType.IsLocomotive || car.CarType.IsTender;
 
-        private static Vector3 Middle(Graph graph, List<Car> cars) =>
-            (graph.GetPosition(cars.First().LocationF) + graph.GetPosition(cars.Last().LocationR)) / 2f;
-
-        // Whether a car stands on a loop track, clear of both switches.
-        private static bool Clear(Graph graph, Loop loop, LoopTrack track, Car car)
+        // The passing loop the coaches stand in, if any: from each end of the coaches, out along the
+        // track to a switch they're behind (entered from its branch side), and a way round between
+        // the two that doesn't use the coaches' track.
+        private static Loop StandingIn(Graph graph, List<Car> coaches)
         {
-            foreach (Location end in new[] { car.LocationF, car.LocationR })
+            Car first = coaches.First(), last = coaches.Last();
+            Location endFirst = FarEnd(graph, first, last), endLast = FarEnd(graph, last, first);
+            var taken = new HashSet<TrackSegment>();
+            foreach (Car car in coaches)
             {
-                if (!track.Segments.Contains(end.segment))
-                    return false;
-                Vector3 p = graph.GetPosition(end);
-                if (Fuel.Flat(p, loop.X.Position) < Wyes.Clearance - 2f || Fuel.Flat(p, loop.Y.Position) < Wyes.Clearance - 2f)
-                    return false;
+                taken.Add(car.LocationF.segment);
+                taken.Add(car.LocationR.segment);
             }
-            return true;
+            List<Behind> side1 = SwitchesBehind(graph, endFirst, graph.GetPosition(endLast), taken);
+            List<Behind> side2 = SwitchesBehind(graph, endLast, graph.GetPosition(endFirst), taken);
+            foreach (var pair in side1.SelectMany(x => side2.Select(y => (x, y))).OrderBy(p => p.x.Distance + p.y.Distance))
+            {
+                var exclude = new HashSet<TrackSegment>(taken);
+                exclude.UnionWith(pair.x.Walked);
+                exclude.UnionWith(pair.y.Walked);
+                Loop loop = Close(graph, pair.x.Node, pair.x.Arrived, pair.y.Node, pair.y.Arrived, exclude);
+                if (loop != null)
+                    return loop;
+            }
+            return null;
         }
 
-        // Passing loops on open track near a point, nearest first.
+        // A switch out along the track from the end of a train, with the train on its branch side.
+        private sealed class Behind
+        {
+            public TrackNode Node;
+            public TrackSegment Arrived;
+            public float Distance;
+            public HashSet<TrackSegment> Walked;
+        }
+
+        // The end of a car away from another car.
+        private static Location FarEnd(Graph graph, Car car, Car other)
+        {
+            Vector3 away = graph.GetPosition(other.LocationF);
+            return Fuel.Flat(graph.GetPosition(car.LocationF), away) >= Fuel.Flat(graph.GetPosition(car.LocationR), away) ? car.LocationF : car.LocationR;
+        }
+
+        // Switches out along the track from a train's end (away from its other end), within reach.
+        private static List<Behind> SwitchesBehind(Graph graph, Location end, Vector3 otherEnd, HashSet<TrackSegment> taken)
+        {
+            var found = new List<Behind>();
+            TrackSegment segment = end.segment;
+            TrackNode toward = Fuel.Flat(segment.a.Position, otherEnd) >= Fuel.Flat(segment.b.Position, otherEnd) ? segment.a : segment.b;
+            var walked = new HashSet<TrackSegment>();
+            float distance = Fuel.Flat(graph.GetPosition(end), toward.Position);
+            for (int guard = 0; guard < 200 && distance < 1500f; guard++)
+            {
+                walked.Add(segment);
+                IReadOnlyList<TrackSegment> connected = graph.SegmentsConnectedTo(toward);
+                if (connected.Count == 1)
+                    break;
+                TrackSegment next;
+                if (graph.IsSwitch(toward) && graph.DecodeSwitchAt(toward, out TrackSegment enter, out _, out _))
+                {
+                    if (segment != enter)
+                    {
+                        // Clear of the switch, or the engine can't get past the coaches.
+                        if (distance >= Wyes.Clearance - 2f)
+                            found.Add(new Behind { Node = toward, Arrived = segment, Distance = distance, Walked = new HashSet<TrackSegment>(walked) });
+                        next = enter;
+                    }
+                    else
+                    {
+                        next = Wyes.OnwardFromPoints(graph, toward, enter);
+                    }
+                }
+                else if (connected.Count == 2)
+                {
+                    next = connected[0] == segment ? connected[1] : connected[0];
+                }
+                else
+                {
+                    break;
+                }
+                if (next == null || taken.Contains(next) && next != segment)
+                    break;
+                TrackNode beyond = next.GetOtherNode(toward);
+                distance += next.GetLength();
+                segment = next;
+                toward = beyond;
+            }
+            return found;
+        }
+
+        // A loop from switches X and Y, each with the standing track arriving on its branch side, if
+        // there's a way round from Y's other branch to X's other branch that leaves out these segments.
+        private static Loop Close(Graph graph, TrackNode x, TrackSegment xArrived, TrackNode y, TrackSegment yArrived, HashSet<TrackSegment> exclude)
+        {
+            if (x == y || !graph.DecodeSwitchAt(x, out TrackSegment xEnter, out TrackSegment xa, out TrackSegment xb)
+                || !graph.DecodeSwitchAt(y, out TrackSegment yEnter, out TrackSegment ya, out TrackSegment yb))
+                return null;
+            TrackSegment xOther = xArrived == xa ? xb : xArrived == xb ? xa : null;
+            TrackSegment yOther = yArrived == ya ? yb : yArrived == yb ? ya : null;
+            if (xOther == null || yOther == null || !xEnter.GroupEnabled || !yEnter.GroupEnabled || exclude.Contains(xOther) || exclude.Contains(yOther))
+                return null;
+            List<(TrackNode, TrackSegment)> around = WayRound(graph, y, yOther, x, xOther, exclude, out float length);
+            if (around == null)
+                return null;
+            return new Loop { X = x, Y = y, XOut = xEnter, YOut = yEnter, Around = around, AroundLength = length };
+        }
+
+        // The shortest way along the track from a node out along a segment to another node, arriving
+        // by a given segment, through switches as a train can run, leaving out some segments.
+        private static List<(TrackNode, TrackSegment)> WayRound(Graph graph, TrackNode from, TrackSegment first, TrackNode to, TrackSegment arriving, HashSet<TrackSegment> exclude, out float length)
+        {
+            length = 0f;
+            const float limit = 3000f;
+            var best = new Dictionary<(TrackSegment, TrackNode), float>();
+            var parent = new Dictionary<(TrackSegment, TrackNode), (TrackSegment, TrackNode)?>();
+            var open = new List<(TrackSegment segment, TrackNode entered, float length)> { (first, from, first.GetLength()) };
+            best[(first, from)] = first.GetLength();
+            parent[(first, from)] = null;
+            while (open.Count > 0)
+            {
+                int i = 0;
+                for (int j = 1; j < open.Count; j++)
+                {
+                    if (open[j].length < open[i].length)
+                        i = j;
+                }
+                var (segment, entered, so) = open[i];
+                open.RemoveAt(i);
+                if (so > best[(segment, entered)] || so > limit)
+                    continue;
+                TrackNode node = segment.GetOtherNode(entered);
+                if (node == to && segment == arriving)
+                {
+                    var path = new List<(TrackNode, TrackSegment)>();
+                    for ((TrackSegment, TrackNode)? at = (segment, entered); at.HasValue; at = parent[at.Value])
+                        path.Add((at.Value.Item2, at.Value.Item1));
+                    path.Reverse();
+                    // Running straight through (no reversing), any way round leaves the engine facing as
+                    // it was, even one through a wye, as it leaves Y and comes into X the same way.
+                    length = so;
+                    return path;
+                }
+                var onward = new List<TrackSegment>();
+                IReadOnlyList<TrackSegment> connected = graph.SegmentsConnectedTo(node);
+                if (graph.IsSwitch(node) && graph.DecodeSwitchAt(node, out TrackSegment enter, out TrackSegment a, out TrackSegment b))
+                {
+                    if (segment == enter)
+                    {
+                        onward.Add(a);
+                        onward.Add(b);
+                    }
+                    else
+                    {
+                        onward.Add(enter);
+                    }
+                }
+                else if (connected.Count == 2)
+                {
+                    onward.Add(connected[0] == segment ? connected[1] : connected[0]);
+                }
+                foreach (TrackSegment next in onward)
+                {
+                    if (next == null || exclude.Contains(next) || !next.GroupEnabled)
+                        continue;
+                    float total = so + next.GetLength();
+                    if (best.TryGetValue((next, node), out float known) && known <= total)
+                        continue;
+                    best[(next, node)] = total;
+                    parent[(next, node)] = (segment, entered);
+                    open.Add((next, node, total));
+                }
+            }
+            return null;
+        }
+
+        // Passing loops near a point a train could pull into whole: a plain track between two
+        // switches (no switches along it) and a way round, nearest first.
         public static List<Loop> LoopsNear(Graph graph, Vector3 at, float within)
         {
             var loops = new List<Loop>();
-            var seen = new HashSet<string>();
+            var seen = new HashSet<TrackSegment>();
             foreach (TrackNode x in graph.Nodes.ToList())
             {
-                if (Fuel.Flat(x.Position, at) > within || !graph.IsSwitch(x) || !graph.DecodeSwitchAt(x, out TrackSegment xEnter, out TrackSegment xa, out TrackSegment xb))
+                if (Fuel.Flat(x.Position, at) > within || !graph.IsSwitch(x) || !graph.DecodeSwitchAt(x, out _, out TrackSegment xa, out TrackSegment xb))
                     continue;
-                LoopTrack ta = Walk(graph, x, xa, out TrackNode endA);
-                LoopTrack tb = Walk(graph, x, xb, out TrackNode endB);
-                if (ta == null || tb == null || endA != endB || endA == x || !graph.IsSwitch(endA))
-                    continue;
-                TrackNode y = endA;
-                if (!graph.DecodeSwitchAt(y, out TrackSegment yEnter, out _, out _) || ta.AtY == yEnter || tb.AtY == yEnter)
-                    continue;
-                if (!xEnter.GroupEnabled || !yEnter.GroupEnabled || !xa.GroupEnabled || !xb.GroupEnabled)
-                    continue;
-                if (!seen.Add(string.Join("|", new[] { x.id, y.id }.OrderBy(i => i))))
-                    continue;
-                loops.Add(new Loop { X = x, Y = y, XOut = xEnter, YOut = yEnter, Tracks = new[] { ta, tb } });
+                foreach (TrackSegment branch in new[] { xa, xb })
+                {
+                    if (branch == null || !branch.GroupEnabled)
+                        continue;
+                    Wyes.Run run = Wyes.Walk(graph, x, branch);
+                    if (run.DeadEnd || run.End == null || run.End == x || !graph.IsSwitch(run.End))
+                        continue;
+                    // Each standing track once, whichever end it's found from.
+                    if (seen.Contains(branch) || seen.Contains(run.Last))
+                        continue;
+                    var track = Segments(graph, x, branch);
+                    Loop loop = Close(graph, x, branch, run.End, run.Last, track);
+                    if (loop == null)
+                        continue;
+                    seen.Add(branch);
+                    seen.Add(run.Last);
+                    loop.AtX = branch;
+                    loop.AtY = run.Last;
+                    loop.Room = run.Length - 2f * Wyes.Clearance;
+                    loop.Priority = branch.priority;
+                    loops.Add(loop);
+                }
             }
             return loops.OrderBy(l => Fuel.Flat(l.Center, at)).ToList();
         }
 
-        // A plain run of track from a switch to the next switch, or null at a dead end.
-        private static LoopTrack Walk(Graph graph, TrackNode from, TrackSegment first, out TrackNode end)
+        // The segments of a plain run of track from a switch to the next.
+        private static HashSet<TrackSegment> Segments(Graph graph, TrackNode from, TrackSegment first)
         {
-            var track = new LoopTrack { AtX = first, Segments = new HashSet<TrackSegment>(), Priority = first.priority };
-            end = null;
+            var segments = new HashSet<TrackSegment>();
             TrackNode at = from;
             TrackSegment segment = first;
-            for (int guard = 0; guard < 500 && segment != null; guard++)
+            for (int guard = 0; guard < 500 && segment != null && segments.Add(segment); guard++)
             {
                 TrackNode next = segment.GetOtherNode(at);
-                track.Segments.Add(segment);
-                track.Length += segment.GetLength();
-                track.AtY = segment;
                 IReadOnlyList<TrackSegment> connected = graph.SegmentsConnectedTo(next);
-                if (connected.Count == 1)
-                    return null;
-                if (connected.Count != 2 || next == from)
-                {
-                    end = next;
-                    return track;
-                }
+                if (connected.Count != 2)
+                    break;
                 segment = connected[0] == segment ? connected[1] : connected[0];
                 at = next;
             }
-            return null;
+            return segments;
         }
 
         // Uncouples a car from its neighbor on the engine side (fromLoco) or the train side, and sets

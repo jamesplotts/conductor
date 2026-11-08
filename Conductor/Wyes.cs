@@ -157,7 +157,7 @@ namespace Conductor
 
         // The way on from a switch entered at its points: the route with the higher priority, or the
         // normal one.
-        private static TrackSegment OnwardFromPoints(Graph graph, TrackNode node, TrackSegment enter)
+        public static TrackSegment OnwardFromPoints(Graph graph, TrackNode node, TrackSegment enter)
         {
             graph.SegmentsReachableFrom(enter, enter.EndForNode(node), out TrackSegment normal, out TrackSegment reversed);
             if (normal == null || reversed == null)
