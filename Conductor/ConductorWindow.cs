@@ -109,6 +109,11 @@ namespace Conductor
                 return;
             }
             section.AddLabel("<size=85%>The train runs the ticked stations top to bottom, then back. The first and last ticked are the ends of the line.</size>");
+            section.AddFieldToggle("Use Station Sidings", () => new Plan(loco).PreferSidings, on =>
+            {
+                var p = new Plan(loco);
+                p.PreferSidings = on;
+            }, canWrite);
             HashSet<string> picked = new Plan(loco).Stops;
             List<string> open = stations.Where(s => s.Closed == null && picked.Contains(s.Id)).Select(s => s.Id).ToList();
             foreach (Station station in stations)

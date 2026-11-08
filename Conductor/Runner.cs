@@ -516,7 +516,7 @@ namespace Conductor
             plan.Since = TimeWeather.Now.TotalSeconds;
             plan.Aimed = false;
             Send(loco, plan, platform.Value);
-            plan.Status = $"Heading for {stop.DisplayName}";
+            plan.Status = $"Heading for {stop.DisplayName}{(Platforms.LastWasSiding ? " (siding)" : "")}";
         }
 
         private static void Send(BaseLocomotive loco, Plan plan, Location location, int? mph = null)
@@ -527,24 +527,9 @@ namespace Conductor
 
         // Where to stop at a station: near the far end of its longest platform track, so the
         // whole train pulls in along it.
-        public static Location? Platform(PassengerStop stop, BaseLocomotive loco)
-        {
-            TrackSpan span = stop.TrackSpans.Where(s => s != null && s.lower.HasValue && s.upper.HasValue).OrderByDescending(s => s.Length).FirstOrDefault();
-            if (span == null)
-                return null;
-            Graph graph = Graph.Shared;
-            Location lower = span.lower.Value, upper = span.upper.Value;
-            // From the end of the train farthest from the platform: the end that comes in last.
-            List<Car> train = loco.EnumerateCoupled().ToList();
-            Vector3 middle = span.GetCenterPoint();
-            Vector3 endA = graph.GetPosition(train[0].LocationFor(Car.LogicalEnd.A));
-            Vector3 endB = graph.GetPosition(train[train.Count - 1].LocationFor(Car.LogicalEnd.B));
-            Vector3 at = Fuel.Flat(endA, middle) >= Fuel.Flat(endB, middle) ? endA : endB;
-            bool upperFar = Fuel.Flat(graph.GetPosition(upper), at) >= Fuel.Flat(graph.GetPosition(lower), at);
-            Location far = upperFar ? upper : lower, near = upperFar ? lower : upper;
-            float inset = Mathf.Min(5f, span.Length / 4f);
-            return graph.LocationByMoving(graph.LocationOrientedToward(far, near), inset, false, true);
-        }
+        // Where to stop at a station: see Platforms.
+        public static Location? Platform(PassengerStop stop, BaseLocomotive loco) =>
+            Platforms.StopAt(stop, loco, new Plan(loco).PreferSidings);
 
         private static Vector3 Center(PassengerStop stop)
         {

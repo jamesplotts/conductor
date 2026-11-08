@@ -61,6 +61,9 @@ namespace Conductor
         // Use any open fuel stop on the railroad, rather than only the ones on the list.
         public bool AnyFuelStop { get => _p["anyFuel"].BoolValueOrDefault(true); set => _p["anyFuel"] = Value.Bool(value); }
 
+        // At a station with a siding beside the main line, stop on the siding.
+        public bool PreferSidings { get => _p["sidings"].BoolValueOrDefault(true); set => _p["sidings"] = Value.Bool(value); }
+
         // Turn the train on a wye at the ends of the line, so the engine leads.
         public bool TurnOnWyes { get => _p["wyes"].BoolValueOrDefault(true); set => _p["wyes"] = Value.Bool(value); }
 
