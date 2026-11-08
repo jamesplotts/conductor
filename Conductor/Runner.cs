@@ -37,6 +37,12 @@ namespace Conductor
         private static Runner _instance;
         // Fill level last seen while filling, per engine, to tell when filling has stalled.
         private readonly Dictionary<string, (float level, double at)> _filling = new Dictionary<string, (float, double)>();
+        // When each engine last looked ahead for trains coming the other way, in real seconds.
+        private readonly Dictionary<string, float> _lookedAhead = new Dictionary<string, float>();
+        // Look ahead this often, in real seconds.
+        private const float LookEvery = 5f;
+        // Give up waiting for a train that doesn't come, in game seconds.
+        private const double MeetPatience = 30 * 60;
 
         public static void Install()
         {
@@ -54,7 +60,11 @@ namespace Conductor
             _instance = null;
         }
 
-        public static void Forget() => _instance?._filling.Clear();
+        public static void Forget()
+        {
+            _instance?._filling.Clear();
+            _instance?._lookedAhead.Clear();
+        }
 
         private void Start() => StartCoroutine(Loop());
 
@@ -187,6 +197,11 @@ namespace Conductor
                         SendToFuel(loco, plan, loader);
                     }
                     break;
+                case Phase.Meeting:
+                    if (!plan.MeetWaiting && plan.MeetSpot.Length > 0)
+                        new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject))
+                            .SetWaypointOrder(new OrderWaypoint(plan.MeetSpot, null), plan.SpeedMph);
+                    break;
                 case Phase.Turning:
                     string[] steps = plan.TurnMoves;
                     if (plan.TurnStep < steps.Length && (StepKind(steps[plan.TurnStep]) == "go" || StepKind(steps[plan.TurnStep]) == "couple"))
@@ -264,15 +279,20 @@ namespace Conductor
                 case Phase.Turning:
                     Turning(loco, plan, ae, route);
                     break;
+                case Phase.Meeting:
+                    Meeting(loco, plan, ae, route);
+                    break;
                 default:
                     Head(loco, plan, route[0].Stop);
                     break;
             }
         }
 
-        private static void ToStation(BaseLocomotive loco, Plan plan, AutoEngineerOrdersHelper ae, List<Station> route)
+        private void ToStation(BaseLocomotive loco, Plan plan, AutoEngineerOrdersHelper ae, List<Station> route)
         {
             Station station = route.FirstOrDefault(s => s.Id == plan.Station);
+            if (station != null && plan.MeetTrains && LookAhead(loco, plan))
+                return;
             if (station == null)
             {
                 // The station was unpicked on the way: go on to the next one.
@@ -546,6 +566,77 @@ namespace Conductor
                 default:
                     return null;
             }
+        }
+
+        // Every few seconds on the way to a station: a train coming the other way? Then into a passing
+        // siding to wait for it. True when a meet has started.
+        private bool LookAhead(BaseLocomotive loco, Plan plan)
+        {
+            float now = Time.realtimeSinceStartup;
+            if (_lookedAhead.TryGetValue(loco.id, out float last) && now - last < LookEvery)
+                return false;
+            _lookedAhead[loco.id] = now;
+            Meet meet = Meets.Find(loco, plan.SpeedMph, out BaseLocomotive other, out string why);
+            if (meet == null)
+            {
+                if (other != null && why != null && plan.MeetWarned != other.id)
+                {
+                    plan.MeetWarned = other.id;
+                    Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} sees {Hyperlink.To(other)} coming the other way, but {why}; carrying on.");
+                }
+                return false;
+            }
+            plan.Phase = Phase.Meeting;
+            plan.MeetWith = other.id;
+            plan.MeetSiding = string.Join(";", meet.Siding.Select(s => s.id));
+            plan.MeetSpot = meet.Spot.HasValue ? Graph.LocationToString(meet.Spot.Value) : "";
+            plan.MeetWaiting = false;
+            plan.Since = TimeWeather.Now.TotalSeconds;
+            if (meet.Spot.HasValue)
+            {
+                Send(loco, plan, meet.Spot.Value);
+                plan.Status = $"Taking the {(meet.OnSiding ? "siding" : "main")} at {meet.Where} to meet {other.DisplayName}";
+            }
+            else
+            {
+                var ae = new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject));
+                if (ae.Orders.Waypoint.HasValue)
+                    ae.ClearWaypoint();
+                plan.Status = $"Holding at {meet.Where} to meet {other.DisplayName}";
+            }
+            Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} will meet {Hyperlink.To(other)} at {meet.Where}, on the {(meet.OnSiding ? "siding" : "main")}.");
+            return true;
+        }
+
+        // Into the siding, then waiting until the other train has gone by.
+        private void Meeting(BaseLocomotive loco, Plan plan, AutoEngineerOrdersHelper ae, List<Station> route)
+        {
+            TrainController.Shared.TryGetCarForId(plan.MeetWith, out Car found);
+            var other = found as BaseLocomotive;
+            var siding = new HashSet<TrackSegment>(plan.MeetSiding.Split(';').Where(id => id.Length > 0)
+                .Select(id => Graph.Shared.GetSegment(id)).Where(s => s != null));
+            bool stopped = loco.IsStopped(2f) && !ae.Orders.Waypoint.HasValue;
+            if (stopped && !plan.MeetWaiting)
+            {
+                plan.MeetWaiting = true;
+                plan.Since = TimeWeather.Now.TotalSeconds;
+            }
+            if (plan.MeetWaiting)
+                plan.Status = $"Waiting for {(other != null ? other.DisplayName : "a train")} to pass";
+            bool passed = Meets.Passed(other, siding);
+            bool tired = plan.MeetWaiting && TimeWeather.Now.TotalSeconds - plan.Since > MeetPatience;
+            if (!passed && !tired)
+                return;
+            if (tired && !passed)
+                Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} waited half an hour for {(other != null ? Hyperlink.To(other) : "a train")}, which hasn't come; carrying on.");
+            plan.MeetWith = "";
+            plan.MeetSiding = "";
+            plan.MeetSpot = "";
+            plan.MeetWaiting = false;
+            plan.Phase = Phase.ToStation;
+            _lookedAhead[loco.id] = Time.realtimeSinceStartup;
+            Station station = route.FirstOrDefault(s => s.Id == plan.Station);
+            Head(loco, plan, station != null ? station.Stop : Next(plan, route, plan.Station));
         }
 
         // The fuel stop to use now, if anything's below the refuel level (or, after filling at

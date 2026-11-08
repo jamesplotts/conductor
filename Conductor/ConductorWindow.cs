@@ -126,6 +126,11 @@ namespace Conductor
                 var p = new Plan(loco);
                 p.PreferSidings = on;
             }, canWrite);
+            section.AddFieldToggle("Meet Oncoming Trains", () => new Plan(loco).MeetTrains, on =>
+            {
+                var p = new Plan(loco);
+                p.MeetTrains = on;
+            }, canWrite);
             HashSet<string> picked = new Plan(loco).Stops;
             List<string> open = stations.Where(s => s.Closed == null && picked.Contains(s.Id)).Select(s => s.Id).ToList();
             foreach (Station station in stations)

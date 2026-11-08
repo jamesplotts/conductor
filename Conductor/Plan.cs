@@ -20,6 +20,8 @@ namespace Conductor
         Fueling,
         // Turning end for end on a wye at an end of the line.
         Turning,
+        // Pulling into a passing siding, or waiting there, for a train coming the other way.
+        Meeting,
     }
 
     // A fuel stop: one water spout, coal chute or diesel stand.
@@ -64,6 +66,9 @@ namespace Conductor
         // At a station with a siding beside the main line, stop on the siding.
         public bool PreferSidings { get => _p["sidings"].BoolValueOrDefault(true); set => _p["sidings"] = Value.Bool(value); }
 
+        // Look ahead for trains coming the other way and wait for them in a passing siding.
+        public bool MeetTrains { get => _p["meets"].BoolValueOrDefault(true); set => _p["meets"] = Value.Bool(value); }
+
         // Turn the train on a wye at the ends of the line, so the engine leads.
         public bool TurnOnWyes { get => _p["wyes"].BoolValueOrDefault(true); set => _p["wyes"] = Value.Bool(value); }
 
@@ -106,6 +111,14 @@ namespace Conductor
         public bool Parked { get => _p["parked"].BoolValue; set => _p["parked"] = Value.Bool(value); }
         // Whether the train has turned at the station it's at.
         public bool Turned { get => _p["turned"].BoolValue; set => _p["turned"] = Value.Bool(value); }
+
+        // A meet: the train waited for, the passing siding's segments, where to stop (empty to stop
+        // where it is), whether it's stopped and waiting, and the last train it couldn't meet.
+        public string MeetWith { get => _p["meetWith"].StringValue ?? ""; set => _p["meetWith"] = Value.String(value ?? ""); }
+        public string MeetSiding { get => _p["meetSiding"].StringValue ?? ""; set => _p["meetSiding"] = Value.String(value ?? ""); }
+        public string MeetSpot { get => _p["meetSpot"].StringValue ?? ""; set => _p["meetSpot"] = Value.String(value ?? ""); }
+        public bool MeetWaiting { get => _p["meetWaiting"].BoolValue; set => _p["meetWaiting"] = Value.Bool(value); }
+        public string MeetWarned { get => _p["meetWarned"].StringValue ?? ""; set => _p["meetWarned"] = Value.String(value ?? ""); }
 
         // When the current phase began, in game seconds.
         public double Since { get => _p["since"].FloatValue; set => _p["since"] = Value.Float((float)value); }

@@ -262,7 +262,7 @@ namespace Conductor
         // The passing loop the coaches stand in, if any: from each end of the coaches, out along the
         // track to a switch they're behind (entered from its branch side), and a way round between
         // the two that doesn't use the coaches' track.
-        private static Loop StandingIn(Graph graph, List<Car> coaches)
+        public static Loop StandingIn(Graph graph, List<Car> coaches)
         {
             Car first = coaches.First(), last = coaches.Last();
             Location endFirst = FarEnd(graph, first, last), endLast = FarEnd(graph, last, first);
@@ -368,7 +368,7 @@ namespace Conductor
 
         // The shortest way along the track from a node out along a segment to another node, arriving
         // by a given segment, through switches as a train can run, leaving out some segments.
-        private static List<(TrackNode, TrackSegment)> WayRound(Graph graph, TrackNode from, TrackSegment first, TrackNode to, TrackSegment arriving, HashSet<TrackSegment> exclude, out float length)
+        public static List<(TrackNode from, TrackSegment segment)> WayRound(Graph graph, TrackNode from, TrackSegment first, TrackNode to, TrackSegment arriving, HashSet<TrackSegment> exclude, out float length)
         {
             length = 0f;
             const float limit = 3000f;
@@ -392,7 +392,7 @@ namespace Conductor
                 TrackNode node = segment.GetOtherNode(entered);
                 if (node == to && segment == arriving)
                 {
-                    var path = new List<(TrackNode, TrackSegment)>();
+                    var path = new List<(TrackNode from, TrackSegment segment)>();
                     for ((TrackSegment, TrackNode)? at = (segment, entered); at.HasValue; at = parent[at.Value])
                         path.Add((at.Value.Item2, at.Value.Item1));
                     path.Reverse();
