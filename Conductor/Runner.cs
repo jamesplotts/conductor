@@ -182,13 +182,13 @@ namespace Conductor
             switch (plan.Phase)
             {
                 case Phase.ToStation:
-                    Head(loco, plan, StationStop(plan) ?? Next(plan, route, plan.Station));
+                    Head(loco, plan, NextFromHere(loco, plan, route));
                     break;
                 case Phase.ToFuel:
                 case Phase.Fueling:
                     CarLoadTargetLoader loader = Fuel.Find(plan.Loader);
                     if (loader == null)
-                        Head(loco, plan, StationStop(plan) ?? Next(plan, route, plan.Station));
+                        Head(loco, plan, NextFromHere(loco, plan, route));
                     else if (Fuel.LinedUp(loco, loader) && Fuel.SetLoading(loader, true))
                         plan.Phase = Phase.Fueling;
                     else
@@ -844,6 +844,46 @@ namespace Conductor
             }
             plan.Loader = "";
             Head(loco, plan, StationStop(plan));
+        }
+
+        // The next station from wherever the train is now, as it may have been driven by hand while
+        // Conductor was off: the station ahead of it on the stretch of line it's on, the way it's
+        // moving (or the way the run was going, when it's stopped).
+        private static PassengerStop NextFromHere(BaseLocomotive loco, Plan plan, List<Station> route)
+        {
+            // Standing at one of the stations: make the stop there.
+            Station here = route.FirstOrDefault(st => AtStation(loco, st.Stop));
+            if (here != null)
+            {
+                ModEntry.Log?.Info($"Conductor: {loco.DisplayName} back on at {here.Name}: stopping there (was heading for {plan.Station}).");
+                return here.Stop;
+            }
+            Graph graph = Graph.Shared;
+            Vector3 front = graph.GetPosition(loco.LocationF), back = graph.GetPosition(loco.LocationR);
+            int best = -1;
+            float bestOff = float.MaxValue;
+            for (int i = 0; i + 1 < route.Count; i++)
+            {
+                Vector3 a = Center(route[i].Stop), b = Center(route[i + 1].Stop);
+                float off = Fuel.Flat(front, a) + Fuel.Flat(front, b) - Fuel.Flat(a, b);
+                if (off < bestOff)
+                {
+                    bestOff = off;
+                    best = i;
+                }
+            }
+            if (best < 0)
+                return StationStop(plan) ?? Next(plan, route, plan.Station);
+            Vector3 from = Center(route[best].Stop), to = Center(route[best + 1].Stop);
+            if (Mathf.Abs(loco.velocity) > 0.5f)
+            {
+                Vector3 heading = (front - back) * Mathf.Sign(loco.velocity);
+                plan.Direction = Vector3.Dot(heading, to - from) >= 0f ? 1 : -1;
+            }
+            PassengerStop next = route[plan.Direction > 0 ? best + 1 : best].Stop;
+            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} back on between {route[best].Name} and {route[best + 1].Name}, "
+                + $"going {(plan.Direction > 0 ? "toward " + route[route.Count - 1].Name : "toward " + route[0].Name)}: heading for {next.DisplayName} (was {plan.Station}).");
+            return next;
         }
 
         // The station a fuel stop was on the way to.
