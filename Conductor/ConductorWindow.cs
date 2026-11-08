@@ -139,11 +139,9 @@ namespace Conductor
                 string name = (s.Depth > 0 ? "    ↳ " : "") + s.Name;
                 if (open.Count >= 2 && (s.Id == open.First() || s.Id == open.Last()))
                     name += "  <color=#E0A040>end</color>";
+                // Stations not bought or built to yet aren't shown; they appear once they open.
                 if (s.Closed != null)
-                {
-                    section.AddField(name, $"<color=#888888>{s.Closed}</color>");
                     continue;
-                }
                 section.AddFieldToggle(name, () => new Plan(loco).Stops.Contains(s.Id), on =>
                 {
                     var p = new Plan(loco);
