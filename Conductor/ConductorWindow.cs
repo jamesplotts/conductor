@@ -204,7 +204,7 @@ namespace Conductor
                 var p = new Plan(loco);
                 p.TurnOnWyes = on;
             }, canWrite);
-            section.AddLabel("<size=85%>At each end of the line, if the engine would be at the back for the trip home, the train turns on the nearest wye: into one leg, all the way into the tail, and out the other leg.</size>");
+            section.AddLabel("<size=85%>At each end of the line, if the engine would be at the back for the trip home, the train turns on the station's wye: into one leg, all the way into the tail, and out the other leg. A train too long for the tail stands in a passing siding while the engine turns alone and runs around it. An observation car on the rear goes through the wye with the engine and is set back on the rear, platform outward.</size>");
             List<Wye> wyes = Wyes.All();
             if (wyes.Count == 0)
             {
@@ -214,7 +214,7 @@ namespace Conductor
             float length = AutoEngineerPlanner.CalculateTotalLength(loco.EnumerateCoupled().ToList());
             foreach (Wye wye in wyes.OrderBy(w => w.Name))
             {
-                string fits = length <= wye.TailRoom ? "fits this train" : "<color=#E0A040>too short for this train</color>";
+                string fits = length <= wye.TailRoom ? "the whole train turns" : "the engine turns alone";
                 section.AddField(wye.Name, $"tail {wye.TailRoom * 3.28084f:0} ft, {fits}");
             }
             section.AddLabel($"<size=85%>This train is {length * 3.28084f:0} ft long.</size>");

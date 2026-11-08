@@ -87,11 +87,13 @@ namespace Conductor
         public bool Aimed { get => _p["aimed"].BoolValue; set => _p["aimed"] = Value.Bool(value); }
         // Lining-up attempts at the current fuel stop.
         public int Tries { get => _p["tries"].IntValueOrDefault(0); set => _p["tries"] = Value.Int(value); }
-        // A wye turn: the waypoints in order, and which one the train is on.
+        // A turn: its steps in order (see Turns), and which one the train is on.
         public string[] TurnMoves { get => Split(_p["turnMoves"].StringValue, ';').ToArray(); set => _p["turnMoves"] = Value.String(string.Join(";", value ?? new string[0])); }
         public int TurnStep { get => _p["turnStep"].IntValueOrDefault(0); set => _p["turnStep"] = Value.Int(value); }
         // An end of the line had no wye: turn at the next station that has one.
         public bool TurnPending { get => _p["turnPending"].BoolValue; set => _p["turnPending"] = Value.Bool(value); }
+        // Whether the train has already pulled into a passing siding to turn at this station.
+        public bool Parked { get => _p["parked"].BoolValue; set => _p["parked"] = Value.Bool(value); }
         // Whether the train has turned at the station it's at.
         public bool Turned { get => _p["turned"].BoolValue; set => _p["turned"] = Value.Bool(value); }
 

@@ -188,12 +188,9 @@ namespace Conductor
                     }
                     break;
                 case Phase.Turning:
-                    string[] moves = plan.TurnMoves;
-                    if (plan.TurnStep < moves.Length)
-                    {
-                        new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject))
-                            .SetWaypointOrder(new OrderWaypoint(moves[plan.TurnStep], null), TurnMph(plan));
-                    }
+                    string[] steps = plan.TurnMoves;
+                    if (plan.TurnStep < steps.Length && (StepKind(steps[plan.TurnStep]) == "go" || StepKind(steps[plan.TurnStep]) == "couple"))
+                        IssueStep(loco, plan, steps[plan.TurnStep]);
                     break;
                 // At a station the dwell starts over; leaving sends the train on as usual.
             }
@@ -315,6 +312,7 @@ namespace Conductor
             plan.Since = TimeWeather.Now.TotalSeconds;
             plan.Tries = 0;
             plan.Turned = false;
+            plan.Parked = false;
             List<Station> route = Route(plan);
             // Leaving from an end of the line, the train goes back the other way.
             int i = route.FindIndex(s => s.Id == stop.identifier);
@@ -391,8 +389,9 @@ namespace Conductor
             Head(loco, plan, next);
         }
 
-        // Turns the train on the nearest wye when the engine would otherwise be at the back for the
-        // next leg. Returns null when a turn has started, "" when none is needed (or noWyeHere), or why it can't.
+        // Turns the train so the engine leads for the next leg: the whole train on this station's
+        // wye when it fits the tail, otherwise the engine on its own (see Turns). Returns null when a
+        // turn has started, "" when none is needed (or noWyeHere), or why it can't.
         private static string StartTurn(BaseLocomotive loco, Plan plan, PassengerStop next, out bool noWyeHere)
         {
             noWyeHere = false;
@@ -410,56 +409,143 @@ namespace Conductor
             bool facing = Fuel.Flat(front, toward) < Fuel.Flat(back, toward);
             if (atFront && facing)
                 return "";
-            if (atFront != facing)
-                return "needs its engine turned on its own, which Conductor can't do yet; running on as it is.";
+            bool needTurn = !facing;
             float length = AutoEngineerPlanner.CalculateTotalLength(train);
-            Vector3 here = graph.GetPosition(loco.LocationF);
             // Only this station's own wye, not one out past the next station.
             string stationId = plan.Station;
-            Wye wye = Wyes.All().Where(w => w.StopId == stationId && Fuel.Flat(w.Center, here) < 3000f).OrderBy(w => Fuel.Flat(w.Center, here)).FirstOrDefault();
-            if (wye == null)
+            Wye wye = Wyes.All().Where(w => w.StopId == stationId && Fuel.Flat(w.Center, front) < 3000f).OrderBy(w => Fuel.Flat(w.Center, front)).FirstOrDefault();
+            if (needTurn && wye == null)
             {
                 noWyeHere = true;
                 return "";
             }
-            if (length > wye.TailRoom)
-                return $"is too long for the wye at {wye.Name} ({length:0} m of train, the tail holds {wye.TailRoom:0} m); running back with the engine at the rear.";
-            // Leave by the main switch on the side toward the next station; come in by the other.
-            float outward = length + Wyes.Clearance;
-            Location outA = Wyes.Along(graph, wye.MainA, wye.MainAOut, outward);
-            Location outB = Wyes.Along(graph, wye.MainB, wye.MainBOut, outward);
-            bool leaveByA = Fuel.Flat(graph.GetPosition(outA), toward) < Fuel.Flat(graph.GetPosition(outB), toward);
-            Location inLeg = leaveByA ? Wyes.Along(graph, wye.MainB, wye.LegB, wye.LegBLength / 2f) : Wyes.Along(graph, wye.MainA, wye.LegA, wye.LegALength / 2f);
-            Location inTail = Wyes.Along(graph, wye.Tail, wye.TailOut, outward);
-            Location outMain = leaveByA ? outA : outB;
-            plan.TurnMoves = new[] { inLeg, inTail, outMain }.Select(Graph.LocationToString).ToArray();
+            List<string> steps;
+            if (needTurn && !atFront && length <= wye.TailRoom)
+            {
+                // The whole train: in by one leg, all the way into the tail, out by the other leg.
+                Location[] moves = Turns.WyeMoves(graph, wye, length, toward);
+                steps = new List<string>
+                {
+                    Turns.Go(moves[0], $"Turning on the wye at {wye.Name}"),
+                    Turns.Go(moves[1], "Turning: into the wye's tail"),
+                    Turns.Go(moves[2], "Turning: out onto the main"),
+                };
+            }
+            else
+            {
+                steps = Turns.PlanEngine(loco, wye, toward, needTurn, plan.Parked, out string why);
+                if (steps == null)
+                    return why;
+            }
+            plan.TurnMoves = steps.ToArray();
             plan.TurnStep = 0;
+            plan.Tries = 0;
             plan.Phase = Phase.Turning;
-            plan.Since = TimeWeather.Now.TotalSeconds;
-            Send(loco, plan, inLeg, TurnMph(plan));
-            plan.Status = $"Turning on the wye at {wye.Name}";
+            IssueStep(loco, plan, steps[0]);
             return null;
         }
 
-        // Through the wye's switches and into its tail at yard speed.
+        // Through switches, into wye tails and up to coaches at yard speed.
         private static int TurnMph(Plan plan) => Math.Min(10, plan.SpeedMph);
 
         private void Turning(BaseLocomotive loco, Plan plan, AutoEngineerOrdersHelper ae, List<Station> route)
         {
             if (!loco.IsStopped(2f) || ae.Orders.Waypoint.HasValue)
                 return;
-            string[] moves = plan.TurnMoves;
-            int step = plan.TurnStep + 1;
-            if (step < moves.Length)
+            string[] steps = plan.TurnMoves;
+            int current = plan.TurnStep;
+            if (current < steps.Length)
             {
-                plan.TurnStep = step;
-                var aeHelper = new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject));
-                aeHelper.SetWaypointOrder(new OrderWaypoint(moves[step], null), TurnMph(plan));
-                plan.Status = step == 1 ? "Turning: into the wye's tail" : "Turning: out onto the main";
+                string problem = FinishStep(loco, plan, steps[current]);
+                if (problem == "")
+                    return;
+                if (problem != null)
+                {
+                    End(loco, "Stopped while turning: " + problem);
+                    Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} stopped while turning: {problem}");
+                    return;
+                }
+            }
+            int next = current + 1;
+            if (next < steps.Length)
+            {
+                if (StepKind(steps[next]) == "replan")
+                {
+                    // In a passing siding now: plan the turn again from here.
+                    plan.TurnMoves = null;
+                    plan.Parked = true;
+                    plan.Turned = false;
+                    plan.TurnPending = true;
+                    Leave(loco, plan, route);
+                    return;
+                }
+                plan.TurnStep = next;
+                plan.Tries = 0;
+                IssueStep(loco, plan, steps[next]);
                 return;
             }
             plan.TurnMoves = null;
             Leave(loco, plan, route);
+        }
+
+        private static string StepKind(string step) => step.IndexOf(Turns.Sep) < 0 ? (step == "replan" ? "replan" : "go") : step.Substring(0, step.IndexOf(Turns.Sep));
+
+        // Starts a turn step: a move, a coupling, a cut, or brakes off.
+        private static void IssueStep(BaseLocomotive loco, Plan plan, string step)
+        {
+            plan.Since = TimeWeather.Now.TotalSeconds;
+            string[] p = step.Split(Turns.Sep);
+            var ae = new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject));
+            switch (StepKind(step))
+            {
+                case "go":
+                    // A bare location is a turn saved by an older version.
+                    ae.SetWaypointOrder(new OrderWaypoint(p.Length > 1 ? p[1] : p[0], null), TurnMph(plan));
+                    if (p.Length > 2)
+                        plan.Status = p[2];
+                    break;
+                case "couple":
+                    ae.SetWaypointOrder(new OrderWaypoint(p[1], p[2]), TurnMph(plan));
+                    plan.Status = p[3];
+                    break;
+                case "cut":
+                    Turns.CutCar(loco, p[1], p[2] == "loco");
+                    plan.Status = p[3];
+                    break;
+                case "release":
+                    Turns.Release(loco);
+                    plan.Status = p[1];
+                    break;
+            }
+        }
+
+        // Whether a step is done: null when it is, "" to wait, otherwise what went wrong.
+        private static string FinishStep(BaseLocomotive loco, Plan plan, string step)
+        {
+            string[] p = step.Split(Turns.Sep);
+            switch (StepKind(step))
+            {
+                case "couple":
+                    Car car = loco.EnumerateCoupled().FirstOrDefault(c => c.id == p[2]);
+                    if (car != null)
+                    {
+                        Turns.ConnectAir(car);
+                        Turns.UpdateCars(loco);
+                        return null;
+                    }
+                    if (++plan.Tries <= 1)
+                    {
+                        IssueStep(loco, plan, step);
+                        return "";
+                    }
+                    string name = TrainController.Shared.TryGetCarForId(p[2], out Car target) ? target.DisplayName : "the train";
+                    return $"couldn't couple to {name}. Its coaches are standing with their handbrakes on.";
+                case "cut":
+                    // Give the Auto Engineer a moment to see the shorter train.
+                    return TimeWeather.Now.TotalSeconds - plan.Since < 3 ? "" : null;
+                default:
+                    return null;
+            }
         }
 
         // The fuel stop to use now, if anything's below the refuel level (or, after filling at
