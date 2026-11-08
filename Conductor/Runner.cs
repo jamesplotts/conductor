@@ -112,6 +112,8 @@ namespace Conductor
             }
             plan.Direction = nearest == route.Count - 1 ? -1 : 1;
             plan.Running = true;
+            plan.Enabled = true;
+            plan.Held = false;
             plan.Tries = 0;
             plan.Loader = "";
             if (AtStation(loco, route[nearest].Stop))
@@ -132,11 +134,70 @@ namespace Conductor
                     Fuel.SetLoading(loader, false);
             }
             plan.Running = false;
+            plan.Held = false;
             plan.Phase = Phase.Idle;
             plan.Status = why ?? "";
             var ae = new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject));
             if (ae.Mode == AutoEngineerMode.Waypoint && ae.Orders.Waypoint.HasValue)
                 ae.ClearWaypoint();
+        }
+
+        // Disabled: stop the train where it is and let the spout go, so a player can sort things
+        // out by hand. The run keeps its place for when Conductor is enabled again.
+        private void Hold(BaseLocomotive loco, Plan plan)
+        {
+            plan.Held = true;
+            if (plan.Phase == Phase.Fueling)
+            {
+                CarLoadTargetLoader loader = Fuel.Find(plan.Loader);
+                if (loader != null)
+                    Fuel.SetLoading(loader, false);
+                _filling.Remove(loco.id);
+            }
+            var ae = new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject));
+            if (ae.Mode == AutoEngineerMode.Waypoint && ae.Orders.Waypoint.HasValue)
+                ae.ClearWaypoint();
+            Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} is disabled and holding; it's yours until Conductor is enabled again.");
+        }
+
+        // Enabled again: pick the run up where it left off, from wherever the train is now.
+        private void Resume(BaseLocomotive loco, Plan plan)
+        {
+            plan.Held = false;
+            plan.Tries = 0;
+            plan.Since = TimeWeather.Now.TotalSeconds;
+            List<Station> route = Route(plan);
+            if (route.Count < 2)
+                return;
+            switch (plan.Phase)
+            {
+                case Phase.ToStation:
+                    Head(loco, plan, StationStop(plan) ?? Next(plan, route, plan.Station));
+                    break;
+                case Phase.ToFuel:
+                case Phase.Fueling:
+                    CarLoadTargetLoader loader = Fuel.Find(plan.Loader);
+                    if (loader == null)
+                        Head(loco, plan, StationStop(plan) ?? Next(plan, route, plan.Station));
+                    else if (Fuel.LinedUp(loco, loader) && Fuel.SetLoading(loader, true))
+                        plan.Phase = Phase.Fueling;
+                    else
+                    {
+                        plan.Phase = Phase.ToFuel;
+                        SendToFuel(loco, plan, loader);
+                    }
+                    break;
+                case Phase.Turning:
+                    string[] moves = plan.TurnMoves;
+                    if (plan.TurnStep < moves.Length)
+                    {
+                        new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject))
+                            .SetWaypointOrder(new OrderWaypoint(moves[plan.TurnStep], null), TurnMph(plan));
+                    }
+                    break;
+                // At a station the dwell starts over; leaving sends the train on as usual.
+            }
+            Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} is enabled again and carrying on.");
         }
 
         // Turns the train around: it carries on to the station behind it.
@@ -164,6 +225,17 @@ namespace Conductor
 
         private void Tick(BaseLocomotive loco, Plan plan)
         {
+            if (!plan.Enabled)
+            {
+                if (!plan.Held)
+                    Hold(loco, plan);
+                return;
+            }
+            if (plan.Held)
+            {
+                Resume(loco, plan);
+                return;
+            }
             var ae = new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject));
             // Someone took the controls: hand the train over.
             if (ae.Mode != AutoEngineerMode.Waypoint && plan.Phase != Phase.AtStation && plan.Phase != Phase.Fueling)

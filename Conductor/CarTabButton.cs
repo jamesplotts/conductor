@@ -21,7 +21,9 @@ namespace Conductor
                 row.AddLabel(() =>
                 {
                     var plan = new Plan(loco);
-                    return plan.Running ? plan.Status : "";
+                    if (!plan.Running)
+                        return "";
+                    return plan.Enabled ? plan.Status : "<color=#E0A040>Conductor disabled</color>";
                 }, UIPanelBuilder.Frequency.Periodic);
             });
         }

@@ -61,6 +61,11 @@ namespace Conductor
             bool canWrite = plan.AuthorizedToWrite;
             builder.VScrollView(scroll =>
             {
+                scroll.AddFieldToggle("Enabled", () => new Plan(loco).Enabled, on =>
+                {
+                    var p = new Plan(loco);
+                    p.Enabled = on;
+                }, canWrite);
                 scroll.AddField("Status", () => Status(loco), UIPanelBuilder.Frequency.Periodic);
                 scroll.AddField("Aboard", () => Aboard(loco), UIPanelBuilder.Frequency.Periodic);
                 scroll.AddField("Fuel", () => Levels(loco), UIPanelBuilder.Frequency.Periodic);
@@ -259,6 +264,8 @@ namespace Conductor
         private static string Status(BaseLocomotive loco)
         {
             var plan = new Plan(loco);
+            if (plan.Running && !plan.Enabled)
+                return "<color=#E0A040>Disabled: holding, yours to drive.</color> Was: " + plan.Status;
             if (plan.Running)
                 return plan.Status;
             return string.IsNullOrEmpty(plan.Status) ? "Not running" : plan.Status;
