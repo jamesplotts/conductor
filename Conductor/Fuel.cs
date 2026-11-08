@@ -136,27 +136,33 @@ namespace Conductor
             return Mathf.Clamp01((info?.Quantity ?? 0f) / capacity);
         }
 
-        // Where the car's filler for this load is, in game coordinates.
-        public static bool TryFillerPoint(Car car, int slotIndex, out Vector3 point, out float radius)
+        // Where the car's filler for this load is, in game coordinates: of all its fillers for the load
+        // (a tender may have more than one), the one nearest a point, as the game checks them all.
+        public static bool TryFillerPoint(Car car, int slotIndex, Vector3 near, out Vector3 point, out float radius)
         {
-            CarLoadTarget target = car.GetComponentsInChildren<CarLoadTarget>().FirstOrDefault(t => t.slotIndex == slotIndex);
-            if (target == null)
+            point = default;
+            radius = 0f;
+            float best = float.MaxValue;
+            Matrix4x4 matrix = car.GetTransformMatrix(Graph.Shared);
+            foreach (CarLoadTarget target in car.GetComponentsInChildren<CarLoadTarget>().Where(t => t.slotIndex == slotIndex))
             {
-                point = default;
-                radius = 0f;
-                return false;
+                Vector3 p = matrix.MultiplyPoint3x4(car.transform.InverseTransformPoint(target.transform.position));
+                float d = Flat(p, near);
+                if (d < best)
+                {
+                    best = d;
+                    point = p;
+                    radius = target.radius;
+                }
             }
-            Vector3 local = car.transform.InverseTransformPoint(target.transform.position);
-            point = car.GetTransformMatrix(Graph.Shared).MultiplyPoint3x4(local);
-            radius = target.radius;
-            return true;
+            return best < float.MaxValue;
         }
 
         // How far the filler is from the spout, flat; float.MaxValue when it can't tell.
         public static float Miss(BaseLocomotive loco, CarLoadTargetLoader loader)
         {
             Car car = FuelCar(loco, loader.load.id, out int slot);
-            if (car == null || !TryFillerPoint(car, slot, out Vector3 filler, out _))
+            if (car == null || !TryFillerPoint(car, slot, Point(loader), out Vector3 filler, out _))
                 return float.MaxValue;
             return Flat(filler, Point(loader));
         }
@@ -164,9 +170,11 @@ namespace Conductor
         public static bool LinedUp(BaseLocomotive loco, CarLoadTargetLoader loader)
         {
             Car car = FuelCar(loco, loader.load.id, out int slot);
-            if (car == null || !TryFillerPoint(car, slot, out Vector3 filler, out float radius))
+            if (car == null || !TryFillerPoint(car, slot, Point(loader), out Vector3 filler, out float radius))
                 return false;
-            return Flat(filler, Point(loader)) <= radius + loader.radius;
+            float miss = Flat(filler, Point(loader));
+            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} at {Describe(loader.load.id)}: filler {miss:0.00} m from the spout, needs {radius + loader.radius:0.00} m or less.");
+            return miss <= radius + loader.radius;
         }
 
         // Where to send the train so the filler stops under the spout: the end of the train nearest
@@ -179,7 +187,7 @@ namespace Conductor
             why = null;
             Graph graph = Graph.Shared;
             Car car = FuelCar(loco, loader.load.id, out int slot);
-            if (car == null || !TryFillerPoint(car, slot, out Vector3 filler, out _))
+            if (car == null || !TryFillerPoint(car, slot, Point(loader), out Vector3 filler, out _))
             {
                 why = $"{loco.DisplayName} doesn't take {Describe(loader.load.id)}";
                 return false;

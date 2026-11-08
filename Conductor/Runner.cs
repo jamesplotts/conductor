@@ -367,6 +367,7 @@ namespace Conductor
                 plan.Status = $"At {stop.DisplayName}: all aboard";
             if (waited < MinDwell || getting > 0 || (waiting > 0 && !full))
                 return;
+            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} leaving {stop.DisplayName}: boarding for {string.Join(", ", ahead)}; {waiting} still waiting for them, coaches {(full ? "full" : "not full")}.");
             Leave(loco, plan, route);
         }
 

@@ -286,8 +286,14 @@ namespace Conductor
             List<Car> coaches = loco.EnumerateCoupled().Where(c => c.IsPassengerCar()).ToList();
             if (coaches.Count == 0)
                 return "No coaches coupled";
-            int aboard = coaches.Sum(c => (c.GetPassengerMarker() ?? PassengerMarker.Empty()).TotalPassengers);
-            return $"{aboard.Pluralize("passenger")} in {(coaches.Count == 1 ? "1 coach" : coaches.Count + " coaches")}";
+            List<PassengerMarker> markers = coaches.Select(c => c.GetPassengerMarker() ?? PassengerMarker.Empty()).ToList();
+            int aboard = markers.Sum(m => m.TotalPassengers);
+            string text = $"{aboard.Pluralize("passenger")} in {(coaches.Count == 1 ? "1 coach" : coaches.Count + " coaches")}";
+            // Who's going where, in line order.
+            var by = Line.Stations().Select(st => (st.Name, n: markers.Sum(m => m.CountPassengersForStop(st.Id)))).Where(x => x.n > 0).ToList();
+            if (by.Count > 0)
+                text += ": " + string.Join(", ", by.Select(x => $"{x.n} for {x.Name}"));
+            return text;
         }
 
         private static string Levels(BaseLocomotive loco)
