@@ -65,7 +65,13 @@ namespace Conductor
                 {
                     var p = new Plan(loco);
                     p.Enabled = on;
+                    builder.Rebuild();
                 }, canWrite);
+                if (!plan.Enabled && !plan.Running)
+                {
+                    scroll.AddLabel("<size=85%>Conductor is off for this engine. Turn it on for a passenger engine; leave it off for freight and work trains, and Conductor won't touch them.</size>");
+                    return;
+                }
                 scroll.AddField("Status", () => Status(loco), UIPanelBuilder.Frequency.Periodic);
                 scroll.AddField("Aboard", () => Aboard(loco), UIPanelBuilder.Frequency.Periodic);
                 scroll.AddField("Fuel", () => Levels(loco), UIPanelBuilder.Frequency.Periodic);
@@ -103,6 +109,7 @@ namespace Conductor
             });
             // Running state comes from the runner; show the buttons that fit.
             builder.RebuildOnPropertyChange(new Helpers.KeyValueProperties(loco.KeyValueObject, "conductor"), "running");
+            builder.RebuildOnPropertyChange(new Helpers.KeyValueProperties(loco.KeyValueObject, "conductor"), "enabled");
         }
 
         private static void Stations(UIPanelBuilder section, BaseLocomotive loco, bool canWrite)

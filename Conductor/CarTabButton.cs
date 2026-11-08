@@ -22,7 +22,7 @@ namespace Conductor
                 {
                     var plan = new Plan(loco);
                     if (!plan.Running)
-                        return "";
+                        return plan.Enabled ? "" : "<color=#888888>off</color>";
                     return plan.Enabled ? plan.Status : "<color=#E0A040>Conductor disabled</color>";
                 }, UIPanelBuilder.Frequency.Periodic);
             });

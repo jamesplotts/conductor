@@ -72,8 +72,18 @@ namespace Conductor
         public int SpeedMph { get => _p["speed"].IntValueOrDefault(35); set => _p["speed"] = Value.Int(value); }
 
         public bool Running { get => _p["running"].BoolValue; set => _p["running"] = Value.Bool(value); }
-        // Off: Conductor leaves the engine alone, keeping its place in the run, until it's back on.
-        public bool Enabled { get => _p["enabled"].BoolValueOrDefault(true); set => _p["enabled"] = Value.Bool(value); }
+        // Whether Conductor runs this engine at all: on for passenger engines, off for freight and work
+        // trains. Turned off mid-run, the engine holds and keeps its place until it's back on. Engines
+        // set up before there was a switch count as on.
+        public bool Enabled
+        {
+            get
+            {
+                Value v = _p["enabled"];
+                return v.IsNull ? Running || !string.IsNullOrEmpty(_p["stops"].StringValue) : v.BoolValue;
+            }
+            set => _p["enabled"] = Value.Bool(value);
+        }
         // Whether the runner has stood the train down for being disabled.
         public bool Held { get => _p["held"].BoolValue; set => _p["held"] = Value.Bool(value); }
         public Phase Phase { get => (Phase)_p["phase"].IntValueOrDefault(0); set => _p["phase"] = Value.Int((int)value); }
