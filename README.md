@@ -24,6 +24,7 @@ Taking the Auto Engineer off waypoints stops Conductor for that train.
 ## Good to know
 
 - Don't run another mod that drives the same engine (Passenger Helper, Waypoint Queue) at the same time.
+- The game's own Auto Engineer station stops (the AI passenger stop setting) are switched off for engines Conductor is running, since Conductor makes the stops itself; the game's version stops short of the platform when the train is backing up. Other engines are unaffected.
 - The Auto Engineer throws switches itself on the way, unless a car is standing on one or it is under dispatcher (CTC) control.
 - Settings and runs are saved with the game. In multiplayer, the host runs the trains; everyone sees the window.
 

@@ -13,7 +13,7 @@ namespace Conductor
             try
             {
                 _harmony.PatchAll(typeof(Patcher).Assembly);
-                ModEntry.Log?.Info("Conductor: added the Conductor button to engines' Car tab.");
+                ModEntry.Log?.Info("Conductor: added the Conductor button to engines' Car tab and took over station stops for its trains.");
             }
             catch (Exception ex)
             {
