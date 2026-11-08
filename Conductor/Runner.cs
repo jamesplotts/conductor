@@ -29,6 +29,8 @@ namespace Conductor
         private const double FillStall = 40;
         // Lining-up attempts before giving up on a fuel stop.
         private const int MaxTries = 3;
+        // Aim at the far end of the platform again this close to the station, in meters.
+        private const float ReAimMeters = 400f;
         // Fuel stops this close to one just used are topped up too (a water tank beside a coal chute).
         private const float NearbyFuel = 200f;
 
@@ -208,6 +210,15 @@ namespace Conductor
                 Head(loco, plan, Next(plan, route, plan.Station));
                 return;
             }
+            // Which end of the platform is the far one is only sure from close by, so aim again then.
+            if (!plan.Aimed && ae.Orders.Waypoint.HasValue && Fuel.Flat(Graph.Shared.GetPosition(loco.LocationF), Center(station.Stop)) < ReAimMeters)
+            {
+                plan.Aimed = true;
+                Location? platform = Platform(station.Stop, loco);
+                if (platform != null)
+                    Send(loco, plan, platform.Value);
+                return;
+            }
             if (!loco.IsStopped(2f) || ae.Orders.Waypoint.HasValue)
                 return;
             if (AtStation(loco, station.Stop))
@@ -215,7 +226,7 @@ namespace Conductor
                 Arrive(loco, plan, station.Stop);
                 return;
             }
-            // Stopped short (a switch against it, or a car in the way): try again, then give up.
+            // Stopped short (aimed at the wrong end, a switch against it, a car in the way): try again, then give up.
             if (++plan.Tries > MaxTries)
             {
                 End(loco, $"Stopped: couldn't get into {station.Name}. Check the switches and the track ahead.");
@@ -503,6 +514,7 @@ namespace Conductor
             plan.Phase = Phase.ToStation;
             plan.Station = stop.identifier;
             plan.Since = TimeWeather.Now.TotalSeconds;
+            plan.Aimed = false;
             Send(loco, plan, platform.Value);
             plan.Status = $"Heading for {stop.DisplayName}";
         }
@@ -522,16 +534,31 @@ namespace Conductor
                 return null;
             Graph graph = Graph.Shared;
             Location lower = span.lower.Value, upper = span.upper.Value;
-            Vector3 at = graph.GetPosition(loco.LocationF);
+            // From the end of the train farthest from the platform: the end that comes in last.
+            List<Car> train = loco.EnumerateCoupled().ToList();
+            Vector3 middle = span.GetCenterPoint();
+            Vector3 endA = graph.GetPosition(train[0].LocationFor(Car.LogicalEnd.A));
+            Vector3 endB = graph.GetPosition(train[train.Count - 1].LocationFor(Car.LogicalEnd.B));
+            Vector3 at = Fuel.Flat(endA, middle) >= Fuel.Flat(endB, middle) ? endA : endB;
             bool upperFar = Fuel.Flat(graph.GetPosition(upper), at) >= Fuel.Flat(graph.GetPosition(lower), at);
             Location far = upperFar ? upper : lower, near = upperFar ? lower : upper;
             float inset = Mathf.Min(5f, span.Length / 4f);
             return graph.LocationByMoving(graph.LocationOrientedToward(far, near), inset, false, true);
         }
 
+        private static Vector3 Center(PassengerStop stop)
+        {
+            TrackSpan span = stop.TrackSpans.FirstOrDefault(t => t != null);
+            return span != null ? span.GetCenterPoint() : Vector3.zero;
+        }
+
+        // Whether the train is in at the station: a coach on the platform track, as the station
+        // only boards coaches there (or any car, for a train with no coaches).
         private static bool AtStation(BaseLocomotive loco, PassengerStop stop)
         {
-            var train = new HashSet<Car>(loco.EnumerateCoupled());
+            List<Car> cars = loco.EnumerateCoupled().ToList();
+            bool anyCoach = cars.Any(c => c.IsPassengerCar());
+            var train = new HashSet<Car>(cars.Where(c => !anyCoach || c.IsPassengerCar()));
             var onSpan = new List<Car>();
             foreach (TrackSpan span in stop.TrackSpans)
             {

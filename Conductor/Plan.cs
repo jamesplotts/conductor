@@ -76,6 +76,8 @@ namespace Conductor
         public int Direction { get => _p["dir"].IntValueOrDefault(1) >= 0 ? 1 : -1; set => _p["dir"] = Value.Int(value >= 0 ? 1 : -1); }
         // The fuel stop being headed for or used.
         public string Loader { get => _p["loader"].StringValue ?? ""; set => _p["loader"] = Value.String(value ?? ""); }
+        // Whether the station stop has been aimed again from close by.
+        public bool Aimed { get => _p["aimed"].BoolValue; set => _p["aimed"] = Value.Bool(value); }
         // Lining-up attempts at the current fuel stop.
         public int Tries { get => _p["tries"].IntValueOrDefault(0); set => _p["tries"] = Value.Int(value); }
         // A wye turn: the waypoints in order, and which one the train is on.
