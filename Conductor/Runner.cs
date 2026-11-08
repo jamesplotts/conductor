@@ -407,10 +407,13 @@ namespace Conductor
             PassengerStop next = Next(plan, route, plan.Station);
             int at = route.FindIndex(s => s.Id == plan.Station);
             bool atEnd = at == 0 || at == route.Count - 1;
+            string here = at >= 0 ? route[at].Name : plan.Station;
+            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} wye check at {here}: turn on wyes {plan.TurnOnWyes}, end of line {atEnd}, turn pending {plan.TurnPending}, already turned {plan.Turned}.");
             if (plan.TurnOnWyes && !plan.Turned && (atEnd || plan.TurnPending))
             {
                 plan.Turned = true;
                 string note = StartTurn(loco, plan, next, out bool noWyeHere);
+                ModEntry.Log?.Info($"Conductor: {loco.DisplayName} wye check at {here}: {(note == null ? "turning" : noWyeHere ? "no wye here, turn pending" : note.Length == 0 ? "no turn needed" : note)}.");
                 if (note == null)
                 {
                     plan.TurnPending = false;
@@ -449,7 +452,10 @@ namespace Conductor
             Graph graph = Graph.Shared;
             Location? platform = Platform(next, loco);
             if (platform == null)
+            {
+                ModEntry.Log?.Info($"Conductor: {loco.DisplayName} wye check: no platform found at {next?.DisplayName}, so no turn.");
                 return "";
+            }
             Vector3 toward = graph.GetPosition(platform.Value);
             List<Car> train = loco.EnumerateCoupled().ToList();
             Vector3 endA = graph.GetPosition(train[0].LocationFor(Car.LogicalEnd.A));
@@ -458,13 +464,17 @@ namespace Conductor
             Vector3 farEnd = Fuel.Flat(endA, front) > Fuel.Flat(endB, front) ? endA : endB;
             bool atFront = Fuel.Flat(front, toward) < Fuel.Flat(farEnd, toward);
             bool facing = Fuel.Flat(front, toward) < Fuel.Flat(back, toward);
-            if (atFront && facing)
-                return "";
-            bool needTurn = !facing;
             float length = AutoEngineerPlanner.CalculateTotalLength(train);
             // Only this station's own wye, not one out past the next station.
             string stationId = plan.Station;
             Wye wye = Wyes.All().Where(w => w.StopId == stationId && Fuel.Flat(w.Center, front) < 3000f).OrderBy(w => Fuel.Flat(w.Center, front)).FirstOrDefault();
+            string wyes = string.Join(", ", Wyes.All().Select(w => $"{w.Name} ({w.StopId}, {Fuel.Flat(w.Center, front):0} m off, tail {w.TailRoom:0} m)"));
+            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} wye check at {stationId} for {next.DisplayName}: engine front {Fuel.Flat(front, toward):0} m and back {Fuel.Flat(back, toward):0} m from the next platform (facing {facing}), "
+                + $"engine end {Fuel.Flat(front, toward):0} m vs far end {Fuel.Flat(farEnd, toward):0} m (engine at front {atFront}), train {length:0} m; "
+                + $"this station's wye: {(wye != null ? wye.Name : "none")}; all wyes: {(wyes.Length > 0 ? wyes : "none")}.");
+            if (atFront && facing)
+                return "";
+            bool needTurn = !facing;
             if (needTurn && wye == null)
             {
                 noWyeHere = true;
@@ -486,8 +496,12 @@ namespace Conductor
             {
                 steps = Turns.PlanEngine(loco, wye, toward, needTurn, plan.Parked, out string why);
                 if (steps == null)
+                {
+                    ModEntry.Log?.Info($"Conductor: {loco.DisplayName} wye check: engine-only turn not possible: {why}");
                     return why;
+                }
             }
+            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} wye check: turn planned, {steps.Count} steps: {string.Join(" / ", steps)}");
             plan.TurnMoves = steps.ToArray();
             plan.TurnStep = 0;
             plan.Tries = 0;
