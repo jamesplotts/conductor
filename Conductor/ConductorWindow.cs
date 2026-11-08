@@ -126,7 +126,7 @@ namespace Conductor
                 var p = new Plan(loco);
                 p.PreferSidings = on;
             }, canWrite);
-            section.AddFieldToggle("Meet Oncoming Trains", () => new Plan(loco).MeetTrains, on =>
+            section.AddFieldToggle("Avoid Oncoming Trains", () => new Plan(loco).MeetTrains, on =>
             {
                 var p = new Plan(loco);
                 p.MeetTrains = on;
