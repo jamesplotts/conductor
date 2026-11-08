@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Core;
 using Model;
+using Model.AI;
 using Model.Ops;
 using RollingStock;
 using Track;
@@ -93,6 +94,7 @@ namespace Conductor
 
                 scroll.AddSection("Stations", section => Stations(section, loco, canWrite));
                 scroll.AddSection("Fuel Stops", section => FuelStops(section, loco, canWrite));
+                scroll.AddSection("Turning", section => Turning(section, loco, canWrite));
             });
             // Running state comes from the runner; show the buttons that fit.
             builder.RebuildOnPropertyChange(new Helpers.KeyValueProperties(loco.KeyValueObject, "conductor"), "running");
@@ -183,6 +185,29 @@ namespace Conductor
                 section.AddButton("Add Fuel Stop", () => PickFuel(loco, section));
             if (!string.IsNullOrEmpty(_fuelNote))
                 section.AddLabel($"<color=#E0A040>{_fuelNote}</color>");
+        }
+
+        private static void Turning(UIPanelBuilder section, BaseLocomotive loco, bool canWrite)
+        {
+            section.AddFieldToggle("Turn on Wyes", () => new Plan(loco).TurnOnWyes, on =>
+            {
+                var p = new Plan(loco);
+                p.TurnOnWyes = on;
+            }, canWrite);
+            section.AddLabel("<size=85%>At each end of the line, if the engine would be at the back for the trip home, the train turns on the nearest wye: into one leg, all the way into the tail, and out the other leg.</size>");
+            List<Wye> wyes = Wyes.All();
+            if (wyes.Count == 0)
+            {
+                section.AddLabel("No wyes found on open track.");
+                return;
+            }
+            float length = AutoEngineerPlanner.CalculateTotalLength(loco.EnumerateCoupled().ToList());
+            foreach (Wye wye in wyes.OrderBy(w => w.Name))
+            {
+                string fits = length <= wye.TailRoom ? "fits this train" : "<color=#E0A040>too short for this train</color>";
+                section.AddField(wye.Name, $"tail {wye.TailRoom * 3.28084f:0} ft, {fits}");
+            }
+            section.AddLabel($"<size=85%>This train is {length * 3.28084f:0} ft long.</size>");
         }
 
         private static void PickFuel(BaseLocomotive loco, UIPanelBuilder section)

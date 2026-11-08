@@ -18,6 +18,8 @@ namespace Conductor
         ToFuel,
         // Stopped under a spout, filling.
         Fueling,
+        // Turning end for end on a wye at an end of the line.
+        Turning,
     }
 
     // A fuel stop: one water spout, coal chute or diesel stand.
@@ -59,6 +61,9 @@ namespace Conductor
         // Use any open fuel stop on the railroad, rather than only the ones on the list.
         public bool AnyFuelStop { get => _p["anyFuel"].BoolValueOrDefault(true); set => _p["anyFuel"] = Value.Bool(value); }
 
+        // Turn the train on a wye at the ends of the line, so the engine leads.
+        public bool TurnOnWyes { get => _p["wyes"].BoolValueOrDefault(true); set => _p["wyes"] = Value.Bool(value); }
+
         // Refuel when coal, water or diesel falls below this, in percent.
         public int RefuelBelow { get => _p["refuelBelow"].IntValueOrDefault(35); set => _p["refuelBelow"] = Value.Int(value); }
         public int SpeedMph { get => _p["speed"].IntValueOrDefault(35); set => _p["speed"] = Value.Int(value); }
@@ -73,6 +78,12 @@ namespace Conductor
         public string Loader { get => _p["loader"].StringValue ?? ""; set => _p["loader"] = Value.String(value ?? ""); }
         // Lining-up attempts at the current fuel stop.
         public int Tries { get => _p["tries"].IntValueOrDefault(0); set => _p["tries"] = Value.Int(value); }
+        // A wye turn: the waypoints in order, and which one the train is on.
+        public string[] TurnMoves { get => Split(_p["turnMoves"].StringValue, ';').ToArray(); set => _p["turnMoves"] = Value.String(string.Join(";", value ?? new string[0])); }
+        public int TurnStep { get => _p["turnStep"].IntValueOrDefault(0); set => _p["turnStep"] = Value.Int(value); }
+        // Whether the train has turned at the station it's at.
+        public bool Turned { get => _p["turned"].BoolValue; set => _p["turned"] = Value.Bool(value); }
+
         // When the current phase began, in game seconds.
         public double Since { get => _p["since"].FloatValue; set => _p["since"] = Value.Float((float)value); }
 

@@ -190,6 +190,9 @@ namespace Conductor
                 case Phase.Fueling:
                     Fueling(loco, plan, route);
                     break;
+                case Phase.Turning:
+                    Turning(loco, plan, ae, route);
+                    break;
                 default:
                     Head(loco, plan, route[0].Stop);
                     break;
@@ -228,6 +231,7 @@ namespace Conductor
             plan.Station = stop.identifier;
             plan.Since = TimeWeather.Now.TotalSeconds;
             plan.Tries = 0;
+            plan.Turned = false;
             List<Station> route = Route(plan);
             // Leaving from an end of the line, the train goes back the other way.
             int i = route.FindIndex(s => s.Id == stop.identifier);
@@ -269,6 +273,16 @@ namespace Conductor
         private void Leave(BaseLocomotive loco, Plan plan, List<Station> route)
         {
             PassengerStop next = Next(plan, route, plan.Station);
+            int at = route.FindIndex(s => s.Id == plan.Station);
+            if (plan.TurnOnWyes && !plan.Turned && (at == 0 || at == route.Count - 1))
+            {
+                plan.Turned = true;
+                string note = StartTurn(loco, plan, next);
+                if (note == null)
+                    return;
+                if (note.Length > 0)
+                    Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} {note}");
+            }
             CarLoadTargetLoader fuel = FuelNeeded(loco, plan, null);
             if (fuel != null)
             {
@@ -277,6 +291,71 @@ namespace Conductor
                 return;
             }
             Head(loco, plan, next);
+        }
+
+        // Turns the train on the nearest wye when the engine would otherwise be at the back for the
+        // next leg. Returns null when a turn has started, "" when none is needed, or why it can't.
+        private static string StartTurn(BaseLocomotive loco, Plan plan, PassengerStop next)
+        {
+            Graph graph = Graph.Shared;
+            Location? platform = Platform(next, loco);
+            if (platform == null)
+                return "";
+            Vector3 toward = graph.GetPosition(platform.Value);
+            List<Car> train = loco.EnumerateCoupled().ToList();
+            Vector3 endA = graph.GetPosition(train[0].LocationFor(Car.LogicalEnd.A));
+            Vector3 endB = graph.GetPosition(train[train.Count - 1].LocationFor(Car.LogicalEnd.B));
+            Vector3 front = graph.GetPosition(loco.LocationF), back = graph.GetPosition(loco.LocationR);
+            Vector3 farEnd = Fuel.Flat(endA, front) > Fuel.Flat(endB, front) ? endA : endB;
+            bool atFront = Fuel.Flat(front, toward) < Fuel.Flat(farEnd, toward);
+            bool facing = Fuel.Flat(front, toward) < Fuel.Flat(back, toward);
+            if (atFront && facing)
+                return "";
+            if (atFront != facing)
+                return "needs its engine turned on its own, which Conductor can't do yet; running on as it is.";
+            float length = AutoEngineerPlanner.CalculateTotalLength(train);
+            Vector3 here = graph.GetPosition(loco.LocationF);
+            Wye wye = Wyes.All().Where(w => Fuel.Flat(w.Center, here) < 3000f).OrderBy(w => Fuel.Flat(w.Center, here)).FirstOrDefault();
+            if (wye == null)
+                return "has no wye nearby to turn on; running back with the engine at the rear.";
+            if (length > wye.TailRoom)
+                return $"is too long for the wye at {wye.Name} ({length:0} m of train, the tail holds {wye.TailRoom:0} m); running back with the engine at the rear.";
+            // Leave by the main switch on the side toward the next station; come in by the other.
+            float outward = length + Wyes.Clearance;
+            Location outA = Wyes.Along(graph, wye.MainA, wye.MainAOut, outward);
+            Location outB = Wyes.Along(graph, wye.MainB, wye.MainBOut, outward);
+            bool leaveByA = Fuel.Flat(graph.GetPosition(outA), toward) < Fuel.Flat(graph.GetPosition(outB), toward);
+            Location inLeg = leaveByA ? Wyes.Along(graph, wye.MainB, wye.LegB, wye.LegBLength / 2f) : Wyes.Along(graph, wye.MainA, wye.LegA, wye.LegALength / 2f);
+            Location inTail = Wyes.Along(graph, wye.Tail, wye.TailOut, outward);
+            Location outMain = leaveByA ? outA : outB;
+            plan.TurnMoves = new[] { inLeg, inTail, outMain }.Select(Graph.LocationToString).ToArray();
+            plan.TurnStep = 0;
+            plan.Phase = Phase.Turning;
+            plan.Since = TimeWeather.Now.TotalSeconds;
+            Send(loco, plan, inLeg, TurnMph(plan));
+            plan.Status = $"Turning on the wye at {wye.Name}";
+            return null;
+        }
+
+        // Through the wye's switches and into its tail at yard speed.
+        private static int TurnMph(Plan plan) => Math.Min(10, plan.SpeedMph);
+
+        private void Turning(BaseLocomotive loco, Plan plan, AutoEngineerOrdersHelper ae, List<Station> route)
+        {
+            if (!loco.IsStopped(2f) || ae.Orders.Waypoint.HasValue)
+                return;
+            string[] moves = plan.TurnMoves;
+            int step = plan.TurnStep + 1;
+            if (step < moves.Length)
+            {
+                plan.TurnStep = step;
+                var aeHelper = new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject));
+                aeHelper.SetWaypointOrder(new OrderWaypoint(moves[step], null), TurnMph(plan));
+                plan.Status = step == 1 ? "Turning: into the wye's tail" : "Turning: out onto the main";
+                return;
+            }
+            plan.TurnMoves = null;
+            Leave(loco, plan, route);
         }
 
         // The fuel stop to use now, if anything's below the refuel level (or, after filling at
@@ -428,10 +507,10 @@ namespace Conductor
             plan.Status = $"Heading for {stop.DisplayName}";
         }
 
-        private static void Send(BaseLocomotive loco, Plan plan, Location location)
+        private static void Send(BaseLocomotive loco, Plan plan, Location location, int? mph = null)
         {
             var ae = new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject));
-            ae.SetWaypointOrder(new OrderWaypoint(Graph.LocationToString(location), null), plan.SpeedMph);
+            ae.SetWaypointOrder(new OrderWaypoint(Graph.LocationToString(location), null), mph ?? plan.SpeedMph);
         }
 
         // Where to stop at a station: near the far end of its longest platform track, so the

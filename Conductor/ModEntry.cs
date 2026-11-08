@@ -32,6 +32,7 @@ namespace Conductor
         public void OnWorldUnload()
         {
             Fuel.Forget();
+            Wyes.Forget();
             Runner.Forget();
         }
     }
