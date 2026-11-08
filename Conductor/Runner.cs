@@ -121,8 +121,9 @@ namespace Conductor
                 }
             }
             // From an end the only way is back; from partway along, the way the train is going.
-            plan.Direction = nearest == 0 ? 1 : nearest == route.Count - 1 ? -1 : WayGoing(loco, route, nearest);
+            plan.Direction = nearest == 0 ? 1 : nearest == route.Count - 1 ? -1 : plan.FirstWay != 0 ? plan.FirstWay : WayGoing(loco, route, nearest);
             plan.Running = true;
+            WaypointMode(loco, plan);
             plan.Enabled = true;
             plan.Held = false;
             plan.Tries = 0;
@@ -179,6 +180,7 @@ namespace Conductor
             plan.Held = false;
             plan.Tries = 0;
             plan.Since = TimeWeather.Now.TotalSeconds;
+            WaypointMode(loco, plan);
             List<Station> route = Route(plan);
             if (route.Count < 2)
                 return;
@@ -887,6 +889,15 @@ namespace Conductor
             ModEntry.Log?.Info($"Conductor: {loco.DisplayName} back on between {route[best].Name} and {route[best + 1].Name}, "
                 + $"going {(plan.Direction > 0 ? "toward " + route[route.Count - 1].Name : "toward " + route[0].Name)}: heading for {next.DisplayName} (was {plan.Station}).");
             return next;
+        }
+
+        // Puts the Auto Engineer on waypoints, as Conductor drives by them, if it was in manual,
+        // road or yard. A train standing at a station stays put until it's sent somewhere.
+        private static void WaypointMode(BaseLocomotive loco, Plan plan)
+        {
+            var ae = new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject));
+            if (ae.Mode != AutoEngineerMode.Waypoint)
+                ae.SetOrdersValue(AutoEngineerMode.Waypoint, null, plan.SpeedMph);
         }
 
         // Passengers in a coach who get off at a station: those going there, and, as the game has it,

@@ -97,6 +97,20 @@ namespace Conductor
                         strip.AddButton("Turn Back", () => Runner.Reverse(loco));
                     }
                 });
+                if (!plan.Running)
+                {
+                    List<Station> line = Runner.Route(plan);
+                    if (line.Count >= 2)
+                    {
+                        string first = line[0].Name, last = line[line.Count - 1].Name;
+                        scroll.AddField("First Toward", scroll.AddDropdownIntPicker(new List<int> { 0, -1, 1 }, plan.FirstWay,
+                            w => w > 0 ? last : w < 0 ? first : "The way it's going", canWrite, w =>
+                            {
+                                var p = new Plan(loco);
+                                p.FirstWay = w;
+                            }));
+                    }
+                }
                 scroll.AddField("Speed", scroll.AddDropdownIntPicker(new List<int> { 15, 20, 25, 30, 35, 40, 45, 50 }, plan.SpeedMph, mph => $"{mph} mph", canWrite, mph =>
                 {
                     var p = new Plan(loco);

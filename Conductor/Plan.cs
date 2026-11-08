@@ -84,6 +84,10 @@ namespace Conductor
         public int RefuelBelow { get => _p["refuelBelow"].IntValueOrDefault(35); set => _p["refuelBelow"] = Value.Int(value); }
         public int SpeedMph { get => _p["speed"].IntValueOrDefault(35); set => _p["speed"] = Value.Int(value); }
 
+        // Which way a run started partway along the line goes first: +1 down the list of stations,
+        // -1 up it, 0 the way the train is moving or the engine faces.
+        public int FirstWay { get => _p["firstWay"].IntValueOrDefault(0); set => _p["firstWay"] = Value.Int(value); }
+
         public bool Running { get => _p["running"].BoolValue; set => _p["running"] = Value.Bool(value); }
         // Whether Conductor runs this engine at all: on for passenger engines, off for freight and work
         // trains. Turned off mid-run, the engine holds and keeps its place until it's back on. Engines
