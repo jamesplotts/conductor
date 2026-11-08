@@ -197,6 +197,11 @@ namespace Conductor
                         SendToFuel(loco, plan, loader);
                     }
                     break;
+                case Phase.Layover:
+                    if (!plan.ParkedUp && plan.ParkSpot.Length > 0)
+                        new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject))
+                            .SetWaypointOrder(new OrderWaypoint(plan.ParkSpot, null), TurnMph(plan));
+                    break;
                 case Phase.Meeting:
                     if (!plan.MeetWaiting && plan.MeetSpot.Length > 0)
                         new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject))
@@ -250,7 +255,7 @@ namespace Conductor
             }
             var ae = new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject));
             // Someone took the controls: hand the train over.
-            if (ae.Mode != AutoEngineerMode.Waypoint && plan.Phase != Phase.AtStation && plan.Phase != Phase.Fueling)
+            if (ae.Mode != AutoEngineerMode.Waypoint && plan.Phase != Phase.AtStation && plan.Phase != Phase.Fueling && !(plan.Phase == Phase.Layover && plan.ParkedUp))
             {
                 End(loco, "Stopped: the Auto Engineer was taken off waypoints.");
                 Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} handed over; the Auto Engineer was taken off waypoints.");
@@ -281,6 +286,9 @@ namespace Conductor
                     break;
                 case Phase.Meeting:
                     Meeting(loco, plan, ae, route);
+                    break;
+                case Phase.Layover:
+                    LaidUp(loco, plan, ae, route);
                     break;
                 default:
                     Head(loco, plan, route[0].Stop);
@@ -340,8 +348,10 @@ namespace Conductor
                 plan.Direction = 1;
             else if (i == route.Count - 1)
                 plan.Direction = -1;
+            // The last run's done: at an end of the line after the cutoff, everyone off and nobody on.
+            plan.LayingUp = plan.LayUp && (i == 0 || i == route.Count - 1) && Layover.IsNight(plan);
             // Board passengers for the stations ahead.
-            SetDestinations(loco, Ahead(plan, route, stop.identifier));
+            SetDestinations(loco, plan.LayingUp ? new List<string>() : Ahead(plan, route, stop.identifier));
             plan.Status = $"At {stop.DisplayName}";
         }
 
@@ -359,6 +369,15 @@ namespace Conductor
             HashSet<string> ahead = new HashSet<string>(Ahead(plan, route, stop.identifier));
             int waiting = ahead.Sum(stop.GetTotalWaitingForDestination);
             bool full = coaches.All(Full);
+            if (plan.LayingUp)
+            {
+                plan.Status = getting > 0 ? $"At {stop.DisplayName}, last run done: {getting.Pluralize("passenger")} getting off" : $"At {stop.DisplayName}, last run done";
+                int aboard = coaches.Sum(c => (c.GetPassengerMarker() ?? PassengerMarker.Empty()).TotalPassengers);
+                if (waited < MinDwell || aboard > 0)
+                    return;
+                StartLayover(loco, plan, stop);
+                return;
+            }
             if (getting > 0)
                 plan.Status = $"At {stop.DisplayName}: {getting.Pluralize("passenger")} getting off";
             else if (waiting > 0 && !full)
@@ -367,6 +386,17 @@ namespace Conductor
                 plan.Status = $"At {stop.DisplayName}: all aboard";
             if (waited < MinDwell || getting > 0 || (waiting > 0 && !full))
                 return;
+            // The cutoff came while it stood at an end: lay up rather than start a run, unless
+            // someone has already boarded.
+            int at = route.FindIndex(s => s.Id == stop.identifier);
+            if (plan.LayUp && (at == 0 || at == route.Count - 1) && Layover.IsNight(plan)
+                && coaches.Sum(c => (c.GetPassengerMarker() ?? PassengerMarker.Empty()).TotalPassengers) == 0)
+            {
+                plan.LayingUp = true;
+                SetDestinations(loco, new List<string>());
+                StartLayover(loco, plan, stop);
+                return;
+            }
             ModEntry.Log?.Info($"Conductor: {loco.DisplayName} leaving {stop.DisplayName}: boarding for {string.Join(", ", ahead)}; {waiting} still waiting for them, coaches {(full ? "full" : "not full")}.");
             Leave(loco, plan, route);
         }
@@ -567,6 +597,44 @@ namespace Conductor
                 default:
                     return null;
             }
+        }
+
+        // Off to park for the night, or staying put at the station.
+        private static void StartLayover(BaseLocomotive loco, Plan plan, PassengerStop stop)
+        {
+            plan.Phase = Phase.Layover;
+            plan.ParkedUp = false;
+            plan.Since = TimeWeather.Now.TotalSeconds;
+            Location? spot = Layover.FindSpot(loco, stop, out string where);
+            plan.ParkSpot = spot.HasValue ? Graph.LocationToString(spot.Value) : "";
+            plan.ParkedAt = where;
+            if (spot.HasValue)
+                Send(loco, plan, spot.Value, TurnMph(plan));
+            plan.Status = $"Going to park for the night {where}";
+            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} laying up for the night {where}.");
+            Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} is done for the night and will lay up {where} until {Layover.Clock(plan.ResumeMinutes)}.");
+        }
+
+        // Parked for the night; in the morning, back to the station to pick up passengers.
+        private static void LaidUp(BaseLocomotive loco, Plan plan, AutoEngineerOrdersHelper ae, List<Station> route)
+        {
+            if (!plan.ParkedUp)
+            {
+                if (!loco.IsStopped(2f) || ae.Orders.Waypoint.HasValue)
+                    return;
+                plan.ParkedUp = true;
+            }
+            if (Layover.IsNight(plan))
+            {
+                plan.Status = $"Laid up {plan.ParkedAt} until {Layover.Clock(plan.ResumeMinutes)}";
+                return;
+            }
+            plan.LayingUp = false;
+            plan.ParkedUp = false;
+            plan.ParkSpot = "";
+            Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} is starting the day's service.");
+            Station station = route.FirstOrDefault(s => s.Id == plan.Station);
+            Head(loco, plan, station != null ? station.Stop : route[plan.Direction > 0 ? 0 : route.Count - 1].Stop);
         }
 
         // Every few seconds on the way to a station: a train coming the other way? Then into a passing

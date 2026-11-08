@@ -105,6 +105,7 @@ namespace Conductor
 
                 scroll.AddSection("Stations", section => Stations(section, loco, canWrite));
                 scroll.AddSection("Fuel Stops", section => FuelStops(section, loco, canWrite));
+                scroll.AddSection("Overnight", section => Overnight(section, loco, canWrite));
                 scroll.AddSection("Turning", section => Turning(section, loco, canWrite));
             });
             // Running state comes from the runner; show the buttons that fit.
@@ -205,6 +206,32 @@ namespace Conductor
                 section.AddButton("Add Fuel Stop", () => PickFuel(loco, section));
             if (!string.IsNullOrEmpty(_fuelNote))
                 section.AddLabel($"<color=#E0A040>{_fuelNote}</color>");
+        }
+
+        private static void Overnight(UIPanelBuilder section, BaseLocomotive loco, bool canWrite)
+        {
+            section.AddFieldToggle("Lay Up Overnight", () => new Plan(loco).LayUp, on =>
+            {
+                var p = new Plan(loco);
+                p.LayUp = on;
+                section.Rebuild();
+            }, canWrite);
+            var plan = new Plan(loco);
+            if (!plan.LayUp)
+                return;
+            List<int> evening = Enumerable.Range(16 * 2, 16).Select(h => h * 30).ToList();
+            List<int> morning = Enumerable.Range(3 * 2, 14).Select(h => h * 30).ToList();
+            section.AddField("Last Run Starts", section.AddDropdownIntPicker(evening, plan.LastRunMinutes, Layover.Clock, canWrite, m =>
+            {
+                var p = new Plan(loco);
+                p.LastRunMinutes = m;
+            }));
+            section.AddField("Resume At", section.AddDropdownIntPicker(morning, plan.ResumeMinutes, Layover.Clock, canWrite, m =>
+            {
+                var p = new Plan(loco);
+                p.ResumeMinutes = m;
+            }));
+            section.AddLabel("<size=85%>Reaching an end of the line at or after the last run's start time, the train lets everyone off, takes nobody on, and parks: on an engine repair track nearby that takes this engine and holds the whole train (the shop works on it overnight), else in a siding nearby, else at the station. At the resume time it comes back to the station and starts the day's service.</size>");
         }
 
         private static void Turning(UIPanelBuilder section, BaseLocomotive loco, bool canWrite)

@@ -19,6 +19,7 @@ namespace Conductor
         // For pulling a train in: the standing track's first segment out of X and last into Y, how
         // much train it holds clear of both switches, and its route priority (a siding's is lower).
         public TrackSegment AtX, AtY;
+        public HashSet<TrackSegment> Track;
         public float Room;
         public int Priority;
         // The way round, from Y to X: each segment with the node it's entered from.
@@ -461,6 +462,7 @@ namespace Conductor
                     seen.Add(branch);
                     seen.Add(run.Last);
                     loop.AtX = branch;
+                    loop.Track = track;
                     loop.AtY = run.Last;
                     loop.Room = run.Length - 2f * Wyes.Clearance;
                     loop.Priority = branch.priority;

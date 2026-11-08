@@ -22,6 +22,8 @@ namespace Conductor
         Turning,
         // Pulling into a passing siding, or waiting there, for a train coming the other way.
         Meeting,
+        // Done for the night: going to where it parks, or parked there until morning.
+        Layover,
     }
 
     // A fuel stop: one water spout, coal chute or diesel stand.
@@ -72,6 +74,12 @@ namespace Conductor
         // Turn the train on a wye at the ends of the line, so the engine leads.
         public bool TurnOnWyes { get => _p["wyes"].BoolValueOrDefault(true); set => _p["wyes"] = Value.Bool(value); }
 
+        // Lay up overnight: at an end of the line after the last run's start time, everyone gets off,
+        // nobody boards, and the train parks until the resume time. Times are minutes after midnight.
+        public bool LayUp { get => _p["night"].BoolValue; set => _p["night"] = Value.Bool(value); }
+        public int LastRunMinutes { get => _p["lastRun"].IntValueOrDefault(20 * 60 + 30); set => _p["lastRun"] = Value.Int(value); }
+        public int ResumeMinutes { get => _p["resumeAt"].IntValueOrDefault(6 * 60); set => _p["resumeAt"] = Value.Int(value); }
+
         // Refuel when coal, water or diesel falls below this, in percent.
         public int RefuelBelow { get => _p["refuelBelow"].IntValueOrDefault(35); set => _p["refuelBelow"] = Value.Int(value); }
         public int SpeedMph { get => _p["speed"].IntValueOrDefault(35); set => _p["speed"] = Value.Int(value); }
@@ -119,6 +127,13 @@ namespace Conductor
         public string MeetSpot { get => _p["meetSpot"].StringValue ?? ""; set => _p["meetSpot"] = Value.String(value ?? ""); }
         public bool MeetWaiting { get => _p["meetWaiting"].BoolValue; set => _p["meetWaiting"] = Value.Bool(value); }
         public string MeetWarned { get => _p["meetWarned"].StringValue ?? ""; set => _p["meetWarned"] = Value.String(value ?? ""); }
+
+        // Laying up: decided on arriving at the end of the line; where it parks (empty to stay at the
+        // station), and whether it's there.
+        public bool LayingUp { get => _p["layingUp"].BoolValue; set => _p["layingUp"] = Value.Bool(value); }
+        public string ParkSpot { get => _p["parkSpot"].StringValue ?? ""; set => _p["parkSpot"] = Value.String(value ?? ""); }
+        public bool ParkedUp { get => _p["parkedUp"].BoolValue; set => _p["parkedUp"] = Value.Bool(value); }
+        public string ParkedAt { get => _p["parkedAt"].StringValue ?? ""; set => _p["parkedAt"] = Value.String(value ?? ""); }
 
         // When the current phase began, in game seconds.
         public double Since { get => _p["since"].FloatValue; set => _p["since"] = Value.Float((float)value); }

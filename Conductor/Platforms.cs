@@ -92,6 +92,13 @@ namespace Conductor
             return Fuel.Flat(graph.GetPosition(nearClear), graph.GetPosition(platformEnd)) >= length ? platformEnd : farClear;
         }
 
+        // Near the far end of a track span, seen from the train, so the whole train pulls in along it.
+        public static Location FarEndFor(TrackSpan span, BaseLocomotive loco)
+        {
+            Graph graph = Graph.Shared;
+            return FarEnd(graph, span, Trailing(graph, loco.EnumerateCoupled().ToList(), span.GetCenterPoint()));
+        }
+
         // Near the far end of a platform track, seen from the end of the train that comes in last.
         private static Location FarEnd(Graph graph, TrackSpan span, Vector3 trailing)
         {
