@@ -1,0 +1,38 @@
+using Railroader.Modding;
+
+namespace Conductor
+{
+    // Entry point for Railroader's built-in mod loader (0.6+). This class must not
+    // touch Harmony types: they only resolve after HarmonyResolver is installed.
+    public sealed class ModEntry : IModEntryPoint, IWorldLifecycle
+    {
+        internal static IModLogger Log;
+
+        public void OnModLoad(IModContext context)
+        {
+            Log = context.Log;
+            HarmonyResolver.Install(context.ModDirectory);
+            Patcher.Patch(context.ModIdentifier);
+            Runner.Install();
+        }
+
+        public void OnModUnload()
+        {
+            ConductorWindow.CloseIfOpen();
+            Runner.Remove();
+            Patcher.Unpatch();
+            Log = null;
+        }
+
+        public void OnWorldLoad()
+        {
+            Fuel.Forget();
+        }
+
+        public void OnWorldUnload()
+        {
+            Fuel.Forget();
+            Runner.Forget();
+        }
+    }
+}

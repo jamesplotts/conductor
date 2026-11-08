@@ -1,0 +1,11 @@
+{
+  "identifier": "jamesplotts/conductor",
+  "version": "__VERSION__",
+  "name": "Conductor",
+  "author": "jamesplotts",
+  "description": "Runs a passenger train between the stations you pick, by Auto Engineer waypoints: it stops at each station until passengers are off and on, turns back at the ends of the line, and pulls in for coal, water or diesel when the engine runs low. Open it from the Conductor button on the engine's Car tab.",
+  "assemblies": ["Conductor.dll"],
+  "dependencies": {
+    "required": ["rr/game >=0.6.0"]
+  }
+}
