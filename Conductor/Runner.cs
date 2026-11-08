@@ -285,14 +285,29 @@ namespace Conductor
         {
             PassengerStop next = Next(plan, route, plan.Station);
             int at = route.FindIndex(s => s.Id == plan.Station);
-            if (plan.TurnOnWyes && !plan.Turned && (at == 0 || at == route.Count - 1))
+            bool atEnd = at == 0 || at == route.Count - 1;
+            if (plan.TurnOnWyes && !plan.Turned && (atEnd || plan.TurnPending))
             {
                 plan.Turned = true;
-                string note = StartTurn(loco, plan, next);
+                string note = StartTurn(loco, plan, next, out bool noWyeHere);
                 if (note == null)
+                {
+                    plan.TurnPending = false;
                     return;
-                if (note.Length > 0)
-                    Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} {note}");
+                }
+                if (noWyeHere)
+                {
+                    // Run on with the engine at the back and turn at the next station with a wye.
+                    if (atEnd && !plan.TurnPending)
+                        Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} has no wye at {route[at].Name}; it'll turn at the next station that has one.");
+                    plan.TurnPending = true;
+                }
+                else
+                {
+                    plan.TurnPending = false;
+                    if (note.Length > 0)
+                        Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} {note}");
+                }
             }
             CarLoadTargetLoader fuel = FuelNeeded(loco, plan, null);
             if (fuel != null)
@@ -305,9 +320,10 @@ namespace Conductor
         }
 
         // Turns the train on the nearest wye when the engine would otherwise be at the back for the
-        // next leg. Returns null when a turn has started, "" when none is needed, or why it can't.
-        private static string StartTurn(BaseLocomotive loco, Plan plan, PassengerStop next)
+        // next leg. Returns null when a turn has started, "" when none is needed (or noWyeHere), or why it can't.
+        private static string StartTurn(BaseLocomotive loco, Plan plan, PassengerStop next, out bool noWyeHere)
         {
+            noWyeHere = false;
             Graph graph = Graph.Shared;
             Location? platform = Platform(next, loco);
             if (platform == null)
@@ -326,9 +342,14 @@ namespace Conductor
                 return "needs its engine turned on its own, which Conductor can't do yet; running on as it is.";
             float length = AutoEngineerPlanner.CalculateTotalLength(train);
             Vector3 here = graph.GetPosition(loco.LocationF);
-            Wye wye = Wyes.All().Where(w => Fuel.Flat(w.Center, here) < 3000f).OrderBy(w => Fuel.Flat(w.Center, here)).FirstOrDefault();
+            // Only this station's own wye, not one out past the next station.
+            string stationId = plan.Station;
+            Wye wye = Wyes.All().Where(w => w.StopId == stationId && Fuel.Flat(w.Center, here) < 3000f).OrderBy(w => Fuel.Flat(w.Center, here)).FirstOrDefault();
             if (wye == null)
-                return "has no wye nearby to turn on; running back with the engine at the rear.";
+            {
+                noWyeHere = true;
+                return "";
+            }
             if (length > wye.TailRoom)
                 return $"is too long for the wye at {wye.Name} ({length:0} m of train, the tail holds {wye.TailRoom:0} m); running back with the engine at the rear.";
             // Leave by the main switch on the side toward the next station; come in by the other.
