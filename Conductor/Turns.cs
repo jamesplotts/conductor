@@ -63,17 +63,27 @@ namespace Conductor
         private static string Couple(Location where, Car car, string note) => "couple" + Sep + Graph.LocationToString(where) + Sep + car.id + Sep + note;
         private static string Cut(Car car, bool fromLoco, string note) => "cut" + Sep + car.id + Sep + (fromLoco ? "loco" : "train") + Sep + note;
 
-        // The three waypoints of a wye turn: into the far leg, into the tail, and out onto the main on
-        // the side toward a point.
-        public static Location[] WyeMoves(Graph graph, Wye wye, float length, Vector3 exitToward)
+        // A wye turn, as steps: out onto the main past the switch it goes in by, into that leg, all the
+        // way into the tail, back out into the other leg, and out onto the main past that leg's switch,
+        // on the side toward a point. Each waypoint leaves the Auto Engineer only one sensible way to it,
+        // so it can't reach a leg the short way round through the tail switch and undo the turn.
+        public static List<string> WyeSteps(Graph graph, Wye wye, float length, Vector3 exitToward, string what)
         {
             float outward = length + Wyes.Clearance;
             Location outA = Wyes.AlongRoute(graph, wye.MainA, wye.MainAOut, outward);
             Location outB = Wyes.AlongRoute(graph, wye.MainB, wye.MainBOut, outward);
             bool leaveByA = Fuel.Flat(graph.GetPosition(outA), exitToward) < Fuel.Flat(graph.GetPosition(outB), exitToward);
-            Location inLeg = leaveByA ? Wyes.Along(graph, wye.MainB, wye.LegB, wye.LegBLength / 2f) : Wyes.Along(graph, wye.MainA, wye.LegA, wye.LegALength / 2f);
+            Location legA = Wyes.Along(graph, wye.MainA, wye.LegA, wye.LegALength / 2f);
+            Location legB = Wyes.Along(graph, wye.MainB, wye.LegB, wye.LegBLength / 2f);
             Location inTail = Wyes.AlongRoute(graph, wye.Tail, wye.TailOut, outward);
-            return new[] { inLeg, inTail, leaveByA ? outA : outB };
+            return new List<string>
+            {
+                Go(leaveByA ? outB : outA, $"Turning {what} on the wye at {wye.Name}"),
+                Go(leaveByA ? legB : legA, $"Turning {what}: into the wye"),
+                Go(inTail, $"Turning {what}: into the wye's tail"),
+                Go(leaveByA ? legA : legB, $"Turning {what}: back out of the tail"),
+                Go(leaveByA ? outA : outB, $"Turning {what}: out onto the main"),
+            };
         }
 
         // Plans an engine-only turn. needTurn: the engine must be turned (else it only runs around).
@@ -201,10 +211,7 @@ namespace Conductor
                     steps.AddRange(RunAround(graph, loop, side, wyeSide, length, "heading for the wye"));
                     side = wyeSide;
                 }
-                Location[] moves = WyeMoves(graph, wye, length, loop.Center);
-                steps.Add(Go(moves[0], $"Turning {what} on the wye at {wye.Name}"));
-                steps.Add(Go(moves[1], $"Turning {what}: into the wye's tail"));
-                steps.Add(Go(moves[2], $"Turning {what}: back out of the wye"));
+                steps.AddRange(WyeSteps(graph, wye, length, loop.Center, what));
             }
             if (side != to)
                 steps.AddRange(RunAround(graph, loop, side, to, length, "running around the train"));

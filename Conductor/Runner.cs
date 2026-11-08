@@ -489,13 +489,7 @@ namespace Conductor
             if (needTurn && !atFront && length <= wye.TailRoom)
             {
                 // The whole train: in by one leg, all the way into the tail, out by the other leg.
-                Location[] moves = Turns.WyeMoves(graph, wye, length, toward);
-                steps = new List<string>
-                {
-                    Turns.Go(moves[0], $"Turning on the wye at {wye.Name}"),
-                    Turns.Go(moves[1], "Turning: into the wye's tail"),
-                    Turns.Go(moves[2], "Turning: out onto the main"),
-                };
+                steps = Turns.WyeSteps(graph, wye, length, toward, "the train");
             }
             else
             {
@@ -555,6 +549,14 @@ namespace Conductor
                 return;
             }
             plan.TurnMoves = null;
+            PassengerStop after = Next(plan, route, plan.Station);
+            Location? platform = after != null ? Platform(after, loco) : null;
+            if (platform != null)
+            {
+                Vector3 toward = Graph.Shared.GetPosition(platform.Value);
+                bool facing = Fuel.Flat(Graph.Shared.GetPosition(loco.LocationF), toward) < Fuel.Flat(Graph.Shared.GetPosition(loco.LocationR), toward);
+                ModEntry.Log?.Info($"Conductor: {loco.DisplayName} turn done; engine {(facing ? "faces" : "does NOT face")} {after.DisplayName}.");
+            }
             Leave(loco, plan, route);
         }
 
@@ -565,6 +567,7 @@ namespace Conductor
         {
             plan.Since = TimeWeather.Now.TotalSeconds;
             string[] p = step.Split(Turns.Sep);
+            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} turn step {plan.TurnStep + 1} of {plan.TurnMoves.Length}: {step}");
             var ae = new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject));
             switch (StepKind(step))
             {
