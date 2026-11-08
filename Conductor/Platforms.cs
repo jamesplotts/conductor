@@ -32,11 +32,11 @@ namespace Conductor
                 if (sidings.Count > 0 && spans.Any(s => s != sidings[0].span && (Siding(graph, s)?.Score ?? 0) < sidings[0].siding.Score))
                 {
                     LastWasSiding = true;
-                    return InSiding(graph, sidings[0].span, sidings[0].siding, train, length);
+                    return InSiding(graph, sidings[0].span, sidings[0].siding, train, length, Overshoot(graph, train, sidings[0].span.GetCenterPoint()));
                 }
             }
             TrackSpan longest = spans.OrderByDescending(s => s.Length).First();
-            return FarEnd(graph, longest, Trailing(graph, train, longest.GetCenterPoint()));
+            return FarEnd(graph, longest, Trailing(graph, train, longest.GetCenterPoint()), Overshoot(graph, train, longest.GetCenterPoint()));
         }
 
         // A platform track between two switches.
@@ -82,14 +82,18 @@ namespace Conductor
 
         // In a siding: at the far end of the platform when the whole train then fits clear of the
         // near switch, otherwise up to the far switch's clearance point.
-        private static Location InSiding(Graph graph, TrackSpan span, SidingInfo siding, List<Car> train, float length)
+        private static Location InSiding(Graph graph, TrackSpan span, SidingInfo siding, List<Car> train, float length, float overshoot)
         {
             Vector3 trailing = Trailing(graph, train, span.GetCenterPoint());
             bool aIsFar = Fuel.Flat(siding.EndA.Position, trailing) >= Fuel.Flat(siding.EndB.Position, trailing);
             Location farClear = aIsFar ? Wyes.Along(graph, siding.EndA, siding.LastA, Wyes.Clearance) : Wyes.Along(graph, siding.EndB, siding.LastB, Wyes.Clearance);
             Location nearClear = aIsFar ? Wyes.Along(graph, siding.EndB, siding.LastB, Wyes.Clearance) : Wyes.Along(graph, siding.EndA, siding.LastA, Wyes.Clearance);
-            Location platformEnd = FarEnd(graph, span, trailing);
-            return Fuel.Flat(graph.GetPosition(nearClear), graph.GetPosition(platformEnd)) >= length ? platformEnd : farClear;
+            Location platformEnd = FarEnd(graph, span, trailing, overshoot);
+            Vector3 near = graph.GetPosition(nearClear);
+            // Not past the far switch's clear point, however far the engine runs on.
+            if (Fuel.Flat(near, graph.GetPosition(platformEnd)) > Fuel.Flat(near, graph.GetPosition(farClear)))
+                return farClear;
+            return Fuel.Flat(near, graph.GetPosition(platformEnd)) >= length ? platformEnd : farClear;
         }
 
         // Near the far end of a track span, seen from the train, so the whole train pulls in along it.
@@ -99,14 +103,29 @@ namespace Conductor
             return FarEnd(graph, span, Trailing(graph, loco.EnumerateCoupled().ToList(), span.GetCenterPoint()));
         }
 
-        // Near the far end of a platform track, seen from the end of the train that comes in last.
-        private static Location FarEnd(Graph graph, TrackSpan span, Vector3 trailing)
+        // Near the far end of a platform track, seen from the end of the train that comes in last,
+        // or past it by overshoot: far enough that the coaches, not the engine, reach the platform's end.
+        private static Location FarEnd(Graph graph, TrackSpan span, Vector3 trailing, float overshoot = 0f)
         {
             Location lower = span.lower.Value, upper = span.upper.Value;
             bool upperFar = Fuel.Flat(graph.GetPosition(upper), trailing) >= Fuel.Flat(graph.GetPosition(lower), trailing);
             Location far = upperFar ? upper : lower, near = upperFar ? lower : upper;
             float inset = Mathf.Min(5f, span.Length / 4f);
-            return graph.LocationByMoving(graph.LocationOrientedToward(far, near), inset, false, true);
+            // Short of the end of the track (a terminus's bumper), which the Auto Engineer won't go past anyway.
+            return graph.LocationByMoving(graph.LocationOrientedToward(far, near), inset - overshoot, false, true);
+        }
+
+        // How far the cars ahead of the first coach reach: the engine and tender when the engine leads,
+        // nothing when the coaches lead.
+        private static float Overshoot(Graph graph, List<Car> train, Vector3 platform)
+        {
+            Vector3 endA = graph.GetPosition(train[0].LocationFor(Car.LogicalEnd.A));
+            Vector3 endB = graph.GetPosition(train[train.Count - 1].LocationFor(Car.LogicalEnd.B));
+            List<Car> fromLeading = Fuel.Flat(endA, platform) <= Fuel.Flat(endB, platform) ? train : Enumerable.Reverse(train).ToList();
+            List<Car> ahead = fromLeading.TakeWhile(c => !c.IsPassengerCar()).ToList();
+            if (ahead.Count == 0 || ahead.Count == train.Count)
+                return 0f;
+            return AutoEngineerPlanner.CalculateTotalLength(ahead);
         }
 
         // The end of the train farthest from a point: the end that comes in last.
