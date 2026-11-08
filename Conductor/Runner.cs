@@ -675,6 +675,7 @@ namespace Conductor
 
         private static void GoFuel(BaseLocomotive loco, Plan plan, CarLoadTargetLoader loader)
         {
+            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} heading for {Fuel.Describe(loader.load.id).ToLowerInvariant()} near {Wyes.NearestStop(Fuel.Point(loader))?.DisplayName}: {Fuel.Describe(loader.load.id)} at {Fuel.Level(loco, loader.load.id):P0}, refuel below {plan.RefuelBelow}%.");
             plan.Loader = loader.keyValueObject.RegisteredId;
             plan.Tries = 0;
             plan.Phase = Phase.ToFuel;
@@ -718,6 +719,7 @@ namespace Conductor
                 plan.Since = TimeWeather.Now.TotalSeconds;
                 _filling.Remove(loco.id);
                 plan.Status = $"Taking {what}";
+                ModEntry.Log?.Info($"Conductor: {loco.DisplayName} taking {what}, starting at {Fuel.Level(loco, loader.load.id):P0}.");
                 return;
             }
             if (++plan.Tries > MaxTries)
@@ -748,6 +750,8 @@ namespace Conductor
                 return;
             Fuel.SetLoading(loader, false);
             _filling.Remove(loco.id);
+            double took = now - plan.Since;
+            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} done taking {what} at {level:P0} after {took / 60:0.0} game minutes{(stalled && level < 0.995f ? ", as it stopped filling" : "")}.");
             if (stalled && level < 0.995f)
                 Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} stopped taking {what} at {level:P0}; the stop may be empty.");
             CarLoadTargetLoader more = FuelNeeded(loco, plan, loader);
