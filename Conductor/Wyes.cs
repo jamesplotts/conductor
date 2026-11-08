@@ -79,6 +79,10 @@ namespace Conductor
                     (toY.End, yEnter, Room(graph, toY.End, yEnter)),
                 };
                 var tail = corners.OrderBy(c => c.room).First();
+                // The tail may run on through switches (Whittier's goes on up the Connelly Creek branch):
+                // a train can back up it as far as the track goes the main way.
+                float reach = Reach(graph, tail.node, tail.outward, TailLimit + Clearance + 3f, out bool deadEnd);
+                tail.room = Mathf.Min(TailLimit, reach - Clearance - (deadEnd ? 3f : 0f));
                 var mains = corners.Where(c => c.node != tail.node).ToList();
                 if (!OnOpenTrack(tail.outward) || !OnOpenTrack(mains[0].outward) || !OnOpenTrack(mains[1].outward))
                     continue;
@@ -146,6 +150,68 @@ namespace Conductor
             if (run.End == null || run.DeadEnd || !graph.IsSwitch(run.End))
                 return false;
             return graph.DecodeSwitchAt(run.End, out _, out TrackSegment a, out TrackSegment b) && (run.Last == a || run.Last == b);
+        }
+
+        // How far a turning train will back up a tail, at most, in meters.
+        private const float TailLimit = 800f;
+
+        // The way on from a switch entered at its points: the route with the higher priority, or the
+        // normal one.
+        private static TrackSegment OnwardFromPoints(Graph graph, TrackNode node, TrackSegment enter)
+        {
+            graph.SegmentsReachableFrom(enter, enter.EndForNode(node), out TrackSegment normal, out TrackSegment reversed);
+            if (normal == null || reversed == null)
+                return normal ?? reversed;
+            return reversed.priority > normal.priority ? reversed : normal;
+        }
+
+        // Follows the track from a node along a segment, on through switches the main way, until it
+        // ends or this far. Calls visit with each segment, the node it's entered from, and the distance
+        // along the way to that node.
+        private static float Follow(Graph graph, TrackNode from, TrackSegment first, float limit, out bool deadEnd, System.Func<TrackNode, TrackSegment, float, bool> visit = null)
+        {
+            deadEnd = false;
+            float length = 0f;
+            TrackNode at = from;
+            TrackSegment segment = first;
+            for (int guard = 0; guard < 500 && segment != null && length < limit; guard++)
+            {
+                if (visit != null && visit(at, segment, length))
+                    return length;
+                TrackNode next = segment.GetOtherNode(at);
+                length += segment.GetLength();
+                IReadOnlyList<TrackSegment> connected = graph.SegmentsConnectedTo(next);
+                if (connected.Count == 1)
+                {
+                    deadEnd = true;
+                    return length;
+                }
+                if (graph.IsSwitch(next) && graph.DecodeSwitchAt(next, out TrackSegment enter, out _, out _))
+                    segment = segment == enter ? OnwardFromPoints(graph, next, enter) : enter;
+                else if (connected.Count == 2)
+                    segment = connected[0] == segment ? connected[1] : connected[0];
+                else
+                    return length;
+                at = next;
+            }
+            return length;
+        }
+
+        private static float Reach(Graph graph, TrackNode from, TrackSegment first, float limit, out bool deadEnd) =>
+            Follow(graph, from, first, limit, out deadEnd);
+
+        // A point this far out from a node, following the track on through switches the main way.
+        public static Location AlongRoute(Graph graph, TrackNode node, TrackSegment segment, float distance)
+        {
+            Location? found = null;
+            Follow(graph, node, segment, distance + 1f, out _, (at, seg, before) =>
+            {
+                if (before + seg.GetLength() < distance)
+                    return false;
+                found = Along(graph, at, seg, distance - before);
+                return true;
+            });
+            return found ?? Along(graph, node, segment, distance);
         }
 
         // Room on a switch's outward track before the end of the track or the next switch.

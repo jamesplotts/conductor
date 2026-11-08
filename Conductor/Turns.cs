@@ -56,11 +56,11 @@ namespace Conductor
         public static Location[] WyeMoves(Graph graph, Wye wye, float length, Vector3 exitToward)
         {
             float outward = length + Wyes.Clearance;
-            Location outA = Wyes.Along(graph, wye.MainA, wye.MainAOut, outward);
-            Location outB = Wyes.Along(graph, wye.MainB, wye.MainBOut, outward);
+            Location outA = Wyes.AlongRoute(graph, wye.MainA, wye.MainAOut, outward);
+            Location outB = Wyes.AlongRoute(graph, wye.MainB, wye.MainBOut, outward);
             bool leaveByA = Fuel.Flat(graph.GetPosition(outA), exitToward) < Fuel.Flat(graph.GetPosition(outB), exitToward);
             Location inLeg = leaveByA ? Wyes.Along(graph, wye.MainB, wye.LegB, wye.LegBLength / 2f) : Wyes.Along(graph, wye.MainA, wye.LegA, wye.LegALength / 2f);
-            Location inTail = Wyes.Along(graph, wye.Tail, wye.TailOut, outward);
+            Location inTail = Wyes.AlongRoute(graph, wye.Tail, wye.TailOut, outward);
             return new[] { inLeg, inTail, leaveByA ? outA : outB };
         }
 
