@@ -254,17 +254,8 @@ namespace Conductor
                 p.TurnOnWyes = on;
             }, canWrite);
             section.AddLabel("<size=85%>At each end of the line, if the engine would be at the back for the trip home, the train turns on the station's wye: into one leg, all the way into the tail, and out the other leg. A train too long for the tail stands in a passing siding while the engine turns alone and runs around it. An observation car on the rear goes through the wye with the engine and is set back on the rear, platform outward.</size>");
-            List<Wye> wyes = Wyes.All();
-            if (wyes.Count == 0)
-            {
-                section.AddLabel("No wyes found on open track.");
-                return;
-            }
-            // One entry per station, noting only where this train is too long to turn whole.
-            float length = AutoEngineerPlanner.CalculateTotalLength(loco.EnumerateCoupled().ToList());
-            IEnumerable<string> places = wyes.GroupBy(w => w.Name).OrderBy(g => g.Key)
-                .Select(g => g.Any(w => length <= w.TailRoom) ? g.Key : $"{g.Key} (engine only)");
-            section.AddField("Wyes", string.Join(", ", places));
+            if (Wyes.All().Count == 0)
+                section.AddLabel("<size=85%>No wyes found on open track yet.</size>");
         }
 
         // A section heading, bolder and larger than the game's own.
