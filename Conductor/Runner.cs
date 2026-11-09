@@ -204,13 +204,11 @@ namespace Conductor
                     break;
                 case Phase.Layover:
                     if (!plan.ParkedUp && plan.ParkSpot.Length > 0)
-                        new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject))
-                            .SetWaypointOrder(new OrderWaypoint(plan.ParkSpot, null), TurnMph(plan));
+                        Order(loco, plan, new OrderWaypoint(plan.ParkSpot, null), TurnMph(plan));
                     break;
                 case Phase.Meeting:
                     if (!plan.MeetWaiting && plan.MeetSpot.Length > 0)
-                        new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject))
-                            .SetWaypointOrder(new OrderWaypoint(plan.MeetSpot, null), plan.SpeedMph);
+                        Order(loco, plan, new OrderWaypoint(plan.MeetSpot, null), plan.SpeedMph);
                     break;
                 case Phase.Turning:
                     string[] steps = plan.TurnMoves;
@@ -278,6 +276,15 @@ namespace Conductor
             {
                 End(loco, "Stopped: the Auto Engineer was taken off waypoints.");
                 Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} handed over; the Auto Engineer was taken off waypoints.");
+                return;
+            }
+            // Someone gave it another waypoint: by hand, or another mod such as Waypoint Queue. Hand
+            // the train over rather than fight over it.
+            if (ae.Mode == AutoEngineerMode.Waypoint && ae.Orders.Waypoint.HasValue && !OurWaypoint(plan, ae.Orders.Waypoint.Value.LocationString))
+            {
+                ModEntry.Log?.Info($"Conductor: {loco.DisplayName}'s waypoint was changed to {ae.Orders.Waypoint.Value.LocationString} (Conductor's was {plan.Sent}); handing over.");
+                End(loco, "Stopped: something else changed the Auto Engineer's waypoint.");
+                Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} handed over; something else changed its waypoint (by hand, or another mod such as Waypoint Queue).");
                 return;
             }
             List<Station> route = Route(plan);
@@ -587,12 +594,12 @@ namespace Conductor
             {
                 case "go":
                     // A bare location is a turn saved by an older version.
-                    ae.SetWaypointOrder(new OrderWaypoint(p.Length > 1 ? p[1] : p[0], null), TurnMph(plan));
+                    Order(loco, plan, new OrderWaypoint(p.Length > 1 ? p[1] : p[0], null), TurnMph(plan));
                     if (p.Length > 2)
                         plan.Status = p[2];
                     break;
                 case "couple":
-                    ae.SetWaypointOrder(new OrderWaypoint(p[1], p[2]), TurnMph(plan));
+                    Order(loco, plan, new OrderWaypoint(p[1], p[2]), TurnMph(plan));
                     plan.Status = p[3];
                     break;
                 case "cut":
@@ -917,6 +924,31 @@ namespace Conductor
                 ae.SetOrdersValue(AutoEngineerMode.Waypoint, null, plan.SpeedMph);
         }
 
+        // Gives the Auto Engineer a waypoint, noting it as Conductor's own.
+        private static void Order(BaseLocomotive loco, Plan plan, OrderWaypoint waypoint, int mph)
+        {
+            plan.Sent = waypoint.LocationString;
+            new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject)).SetWaypointOrder(waypoint, mph);
+        }
+
+        // Whether the Auto Engineer's waypoint is still the one Conductor gave it (within a couple of
+        // meters, should the game tidy the location up).
+        private static bool OurWaypoint(Plan plan, string current)
+        {
+            string sent = plan.Sent;
+            if (string.IsNullOrEmpty(sent) || current == sent)
+                return true;
+            try
+            {
+                Graph graph = Graph.Shared;
+                return Vector3.Distance(graph.GetPosition(graph.ResolveLocationString(current)), graph.GetPosition(graph.ResolveLocationString(sent))) < 2f;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
         // Passengers in a coach who get off at a station: those going there, and, as the game has it,
         // any going somewhere the coach is no longer set to go.
         private static int GettingOff(Car coach, string stopId)
@@ -971,7 +1003,7 @@ namespace Conductor
         private static void Send(BaseLocomotive loco, Plan plan, Location location, int? mph = null)
         {
             var ae = new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject));
-            ae.SetWaypointOrder(new OrderWaypoint(Graph.LocationToString(location), null), mph ?? plan.SpeedMph);
+            Order(loco, plan, new OrderWaypoint(Graph.LocationToString(location), null), mph ?? plan.SpeedMph);
         }
 
         // Where to stop at a station: near the far end of its longest platform track, so the

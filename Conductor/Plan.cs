@@ -139,6 +139,9 @@ namespace Conductor
         public bool ParkedUp { get => _p["parkedUp"].BoolValue; set => _p["parkedUp"] = Value.Bool(value); }
         public string ParkedAt { get => _p["parkedAt"].StringValue ?? ""; set => _p["parkedAt"] = Value.String(value ?? ""); }
 
+        // The last waypoint Conductor gave the Auto Engineer, to tell if something else changes it.
+        public string Sent { get => _p["sent"].StringValue ?? ""; set => _p["sent"] = Value.String(value ?? ""); }
+
         // When the current phase began, in game seconds.
         public double Since { get => _p["since"].FloatValue; set => _p["since"] = Value.Float((float)value); }
 
