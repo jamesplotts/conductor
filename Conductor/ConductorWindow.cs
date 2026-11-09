@@ -196,9 +196,7 @@ namespace Conductor
                 List<CarLoadTargetLoader> open = Fuel.Open(carried);
                 section.AddLabel(open.Count == 0
                     ? "<size=85%>No fuel stops for this engine are open yet.</size>"
-                    : "<size=85%>After a station, if it's below the refuel level, the train pulls up at the nearest of these, fills, and carries on. New ones are used as their areas open.</size>");
-                foreach (IGrouping<string, CarLoadTargetLoader> place in open.GroupBy(Near).OrderBy(g => g.Key))
-                    section.AddField(place.Key, string.Join(", ", place.Select(l => Fuel.Describe(l.load.id)).Distinct()));
+                    : "<size=85%>After a station, if it's below the refuel level, the train pulls up at the nearest open fuel stop, fills, and carries on. New ones are used as their areas open.</size>");
                 return;
             }
             List<FuelStop> stops = plan.FuelStops.Where(f => carried.Contains(f.LoadId)).ToList();
