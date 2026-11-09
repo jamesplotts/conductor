@@ -73,8 +73,8 @@ namespace Conductor
             Location outA = Wyes.AlongRoute(graph, wye.MainA, wye.MainAOut, outward);
             Location outB = Wyes.AlongRoute(graph, wye.MainB, wye.MainBOut, outward);
             bool leaveByA = Fuel.Flat(graph.GetPosition(outA), exitToward) < Fuel.Flat(graph.GetPosition(outB), exitToward);
-            Location legA = Wyes.Along(graph, wye.MainA, wye.LegA, wye.LegALength / 2f);
-            Location legB = Wyes.Along(graph, wye.MainB, wye.LegB, wye.LegBLength / 2f);
+            Location legA = Wyes.AlongLeg(graph, wye.LegA, wye.LegA.Length / 2f);
+            Location legB = Wyes.AlongLeg(graph, wye.LegB, wye.LegB.Length / 2f);
             Location inTail = Wyes.AlongRoute(graph, wye.Tail, wye.TailOut, outward);
             return new List<string>
             {

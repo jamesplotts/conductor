@@ -14,9 +14,8 @@ namespace Conductor
         public TrackNode MainA, MainB;
         // The first segment of each switch's outward track (the main line either way, and the tail).
         public TrackSegment TailOut, MainAOut, MainBOut;
-        // The first segment of the leg from each main switch to the tail switch, and its length.
-        public TrackSegment LegA, LegB;
-        public float LegALength, LegBLength;
+        // The leg from each main switch to the tail switch.
+        public Leg LegA, LegB;
         // How much train fits in the tail clear of the tail switch, in meters.
         public float TailRoom;
         public string Name;
@@ -24,6 +23,26 @@ namespace Conductor
         public string StopId;
 
         public Vector3 Center => (Tail.Position + MainA.Position + MainB.Position) / 3f;
+    }
+
+    // A way along the track between two switches, without reversing: each segment with the node
+    // it's entered from.
+    internal sealed class Leg
+    {
+        public List<(TrackNode from, TrackSegment segment)> Steps;
+        public float Length;
+
+        public TrackNode Start => Steps[0].from;
+        public TrackSegment Last => Steps[Steps.Count - 1].segment;
+        public TrackNode End => Last.GetOtherNode(Steps[Steps.Count - 1].from);
+
+        public Leg Reversed()
+        {
+            var steps = new List<(TrackNode, TrackSegment)>();
+            for (int i = Steps.Count - 1; i >= 0; i--)
+                steps.Add((Steps[i].segment.GetOtherNode(Steps[i].from), Steps[i].segment));
+            return new Leg { Steps = steps, Length = Length };
+        }
     }
 
     internal static class Wyes
@@ -53,24 +72,50 @@ namespace Conductor
             if (graph == null)
                 return result;
             var seen = new HashSet<string>();
+            var cache = new Dictionary<(TrackNode, TrackSegment), List<Leg>>();
+            List<Leg> LegsFrom(TrackNode node, TrackSegment first)
+            {
+                if (!cache.TryGetValue((node, first), out List<Leg> legs))
+                    cache[(node, first)] = legs = Legs(graph, node, first);
+                return legs;
+            }
             foreach (TrackNode s in graph.Nodes.ToList())
             {
                 if (!graph.IsSwitch(s) || !graph.DecodeSwitchAt(s, out TrackSegment sEnter, out TrackSegment sa, out TrackSegment sb))
                     continue;
-                Run toX = Walk(graph, s, sa), toY = Walk(graph, s, sb);
-                if (!Diverges(graph, toX) || !Diverges(graph, toY) || toX.End == toY.End)
+                // The other two corners: reached by s's two diverging routes, each coming in on one of
+                // its own diverging routes, and joined to each other by their other diverging routes.
+                // Legs can run through other switches on the way, as the Sylva yard wye's do.
+                Leg found = null, foundX = null, foundY = null;
+                foreach (Leg toX in LegsFrom(s, sa))
+                {
+                    foreach (Leg toY in LegsFrom(s, sb))
+                    {
+                        if (toX.End == toY.End || toX.End == s || toY.End == s)
+                            continue;
+                        graph.DecodeSwitchAt(toX.End, out _, out TrackSegment xa0, out TrackSegment xb0);
+                        TrackSegment xOther0 = toX.Last == xa0 ? xb0 : xa0;
+                        Leg xToY = LegsFrom(toX.End, xOther0).Where(l => l.End == toY.End && l.Last != toY.Last).OrderBy(l => l.Length).FirstOrDefault();
+                        if (xToY == null)
+                            continue;
+                        float total = toX.Length + toY.Length + xToY.Length;
+                        if (found == null || total < foundX.Length + foundY.Length + found.Length)
+                        {
+                            found = xToY;
+                            foundX = toX;
+                            foundY = toY;
+                        }
+                    }
+                }
+                if (found == null)
                     continue;
-                // X and Y must be joined by their other diverging routes.
-                if (!graph.DecodeSwitchAt(toX.End, out TrackSegment xEnter, out TrackSegment xa, out TrackSegment xb))
-                    continue;
-                TrackSegment xOther = toX.Last == xa ? xb : xa;
-                Run xToY = Walk(graph, toX.End, xOther);
-                if (xToY.End != toY.End || !Diverges(graph, xToY))
-                    continue;
-                string key = string.Join("|", new[] { s.id, toX.End.id, toY.End.id }.OrderBy(i => i));
+                TrackNode xNode = foundX.End, yNode = foundY.End;
+                string key = string.Join("|", new[] { s.id, xNode.id, yNode.id }.OrderBy(i => i));
                 if (!seen.Add(key))
                     continue;
-                graph.DecodeSwitchAt(toY.End, out TrackSegment yEnter, out _, out _);
+                graph.DecodeSwitchAt(xNode, out TrackSegment xEnter, out _, out _);
+                graph.DecodeSwitchAt(yNode, out TrackSegment yEnter, out _, out _);
+                var legs = new List<Leg> { foundX, foundY, found };
                 // Each switch's outward track. The tail is the one that dead-ends soonest, followed on
                 // through switches the main way; the main line runs on for miles both ways. (The
                 // nearest switch doesn't tell them apart: at Whittier the main has one 72 m out, at the
@@ -79,8 +124,8 @@ namespace Conductor
                 var corners = new List<(TrackNode node, TrackSegment outward, float room)>
                 {
                     (s, sEnter, Room(graph, s, sEnter)),
-                    (toX.End, xEnter, Room(graph, toX.End, xEnter)),
-                    (toY.End, yEnter, Room(graph, toY.End, yEnter)),
+                    (xNode, xEnter, Room(graph, xNode, xEnter)),
+                    (yNode, yEnter, Room(graph, yNode, yEnter)),
                 };
                 var ends = corners.Select(c => (c, reach: Reach(graph, c.node, c.outward, TailSearch, out bool ends), ends)).ToList();
                 var tail = ends.Any(e => e.ends) ? ends.Where(e => e.ends).OrderBy(e => e.reach).First().c : corners.OrderBy(c => c.room).First();
@@ -101,8 +146,8 @@ namespace Conductor
                     MainB = mains[1].node,
                     MainBOut = mains[1].outward,
                 };
-                (wye.LegA, wye.LegALength) = Leg(graph, wye.MainA, wye.Tail);
-                (wye.LegB, wye.LegBLength) = Leg(graph, wye.MainB, wye.Tail);
+                wye.LegA = Between(legs, wye.MainA, wye.Tail);
+                wye.LegB = Between(legs, wye.MainB, wye.Tail);
                 if (wye.LegA == null || wye.LegB == null)
                     continue;
                 PassengerStop nearest = NearestStop(wye.Center);
@@ -159,6 +204,8 @@ namespace Conductor
 
         // How far a turning train will back up a tail, at most, in meters.
         private const float TailLimit = 800f;
+        // The longest wye leg looked for, in meters.
+        private const float LegLimit = 900f;
         // How far to follow each corner's track looking for the tail's dead end, in meters.
         private const float TailSearch = 6000f;
 
@@ -228,17 +275,79 @@ namespace Conductor
             return run.Length - Clearance - (run.DeadEnd ? 3f : Clearance);
         }
 
-        private static (TrackSegment first, float length) Leg(Graph graph, TrackNode from, TrackNode to)
+        // The ways from a switch along one of its routes to other switches, each coming in on one of
+        // that switch's diverging routes, without reversing: through plain joints, and on through any
+        // switch in between whichever way it can be set. Up to LegLimit long.
+        private static List<Leg> Legs(Graph graph, TrackNode from, TrackSegment first)
         {
-            if (!graph.DecodeSwitchAt(from, out _, out TrackSegment a, out TrackSegment b))
-                return (null, 0f);
-            foreach (TrackSegment first in new[] { a, b })
+            var result = new List<Leg>();
+            var stack = new Stack<Leg>();
+            stack.Push(new Leg { Steps = new List<(TrackNode, TrackSegment)> { (from, first) }, Length = 0f });
+            // A big yard has a great many ways through it; a wye's legs are among the first few.
+            for (int guard = 0; stack.Count > 0 && guard < 4000; guard++)
             {
-                Run run = Walk(graph, from, first);
-                if (run.End == to)
-                    return (first, run.Length);
+                Leg leg = stack.Pop();
+                (TrackNode at, TrackSegment segment) = leg.Steps[leg.Steps.Count - 1];
+                float length = leg.Length + segment.GetLength();
+                if (length > LegLimit)
+                    continue;
+                TrackNode next = segment.GetOtherNode(at);
+                if (next == from || leg.Steps.Any(st => st.from == next))
+                    continue;
+                IReadOnlyList<TrackSegment> connected = graph.SegmentsConnectedTo(next);
+                var onward = new List<TrackSegment>();
+                if (connected.Count == 2)
+                    onward.Add(connected[0] == segment ? connected[1] : connected[0]);
+                else if (graph.IsSwitch(next) && graph.DecodeSwitchAt(next, out TrackSegment enter, out TrackSegment a, out TrackSegment b))
+                {
+                    if (segment == enter)
+                    {
+                        onward.Add(a);
+                        onward.Add(b);
+                    }
+                    else
+                    {
+                        result.Add(new Leg { Steps = leg.Steps, Length = length });
+                        onward.Add(enter);
+                    }
+                }
+                foreach (TrackSegment o in onward)
+                {
+                    if (!OnOpenTrack(o))
+                        continue;
+                    var steps = new List<(TrackNode, TrackSegment)>(leg.Steps) { (next, o) };
+                    stack.Push(new Leg { Steps = steps, Length = length });
+                }
             }
-            return (null, 0f);
+            return result;
+        }
+
+        // The leg joining two corners, running from the first.
+        private static Leg Between(List<Leg> legs, TrackNode from, TrackNode to)
+        {
+            foreach (Leg leg in legs)
+            {
+                if (leg.Start == from && leg.End == to)
+                    return leg;
+                if (leg.Start == to && leg.End == from)
+                    return leg.Reversed();
+            }
+            return null;
+        }
+
+        // A point this far along a leg.
+        public static Location AlongLeg(Graph graph, Leg leg, float distance)
+        {
+            float before = 0f;
+            foreach ((TrackNode from, TrackSegment segment) in leg.Steps)
+            {
+                float length = segment.GetLength();
+                if (before + length >= distance)
+                    return Along(graph, from, segment, distance - before);
+                before += length;
+            }
+            (TrackNode lastFrom, TrackSegment last) = leg.Steps[leg.Steps.Count - 1];
+            return Along(graph, lastFrom, last, last.GetLength() / 2f);
         }
 
         private static bool OnOpenTrack(TrackSegment segment) => segment != null && segment.GroupEnabled;
