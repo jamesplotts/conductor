@@ -117,10 +117,10 @@ namespace Conductor
                     p.SpeedMph = mph;
                 }));
 
-                scroll.AddSection("Stations", section => Stations(section, loco, canWrite));
-                scroll.AddSection("Fuel Stops", section => FuelStops(section, loco, canWrite));
-                scroll.AddSection("Overnight", section => Overnight(section, loco, canWrite));
-                scroll.AddSection("Turning", section => Turning(section, loco, canWrite));
+                scroll.AddSection(Heading("Stations"), section => Stations(section, loco, canWrite));
+                scroll.AddSection(Heading("Fuel Stops"), section => FuelStops(section, loco, canWrite));
+                scroll.AddSection(Heading("Overnight"), section => Overnight(section, loco, canWrite));
+                scroll.AddSection(Heading("Turn Around"), section => Turning(section, loco, canWrite));
             });
             // Running state comes from the runner; show the buttons that fit.
             builder.RebuildOnPropertyChange(new Helpers.KeyValueProperties(loco.KeyValueObject, "conductor"), "running");
@@ -262,14 +262,15 @@ namespace Conductor
                 section.AddLabel("No wyes found on open track.");
                 return;
             }
+            // One entry per station, noting only where this train is too long to turn whole.
             float length = AutoEngineerPlanner.CalculateTotalLength(loco.EnumerateCoupled().ToList());
-            foreach (Wye wye in wyes.OrderBy(w => w.Name))
-            {
-                string fits = length <= wye.TailRoom ? "the whole train turns" : "the engine turns alone";
-                section.AddField(wye.Name, $"tail {wye.TailRoom * 3.28084f:0} ft, {fits}");
-            }
-            section.AddLabel($"<size=85%>This train is {length * 3.28084f:0} ft long.</size>");
+            IEnumerable<string> places = wyes.GroupBy(w => w.Name).OrderBy(g => g.Key)
+                .Select(g => g.Any(w => length <= w.TailRoom) ? g.Key : $"{g.Key} (engine only)");
+            section.AddField("Wyes", string.Join(", ", places));
         }
+
+        // A section heading, bolder and larger than the game's own.
+        private static string Heading(string title) => $"<b><size=120%>{title}</size></b>";
 
         private static void PickFuel(BaseLocomotive loco, UIPanelBuilder section)
         {
