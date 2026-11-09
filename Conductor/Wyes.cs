@@ -21,6 +21,9 @@ namespace Conductor
         public string Name;
         // The station the wye belongs to: the one nearest it.
         public string StopId;
+        // All three legs, main to main included, and their total length.
+        public List<Leg> Legs;
+        public float Size;
 
         public Vector3 Center => (Tail.Position + MainA.Position + MainB.Position) / 3f;
     }
@@ -154,8 +157,23 @@ namespace Conductor
                 PassengerStop nearest = NearestStop(wye.Center);
                 wye.Name = nearest != null ? nearest.DisplayName : "an unnamed spot";
                 wye.StopId = nearest?.identifier;
+                wye.Legs = legs;
+                wye.Size = legs.Sum(l => l.Length);
                 result.Add(wye);
             }
+            // A leg allowed through other switches can make a bigger triangle around a real wye: at
+            // Whittier, one corner at the far end of the depot tracks, with its legs down both tracks
+            // and through the wye's own switch. Keep the smallest, and drop any whose legs run through
+            // a corner of one already kept.
+            var kept = new List<Wye>();
+            foreach (Wye wye in result.OrderBy(w => w.Size))
+            {
+                var corners = new HashSet<TrackNode>(kept.SelectMany(k => new[] { k.Tail, k.MainA, k.MainB }));
+                bool around = wye.Legs.Any(l => l.Steps.Skip(1).Any(st => corners.Contains(st.from)));
+                if (!around)
+                    kept.Add(wye);
+            }
+            result = kept;
             foreach (Wye wye in result)
                 ModEntry.Log?.Info($"Conductor: wye near {wye.Name}: main switches {wye.MainA.id} and {wye.MainB.id}, tail switch {wye.Tail.id}; tail holds {wye.TailRoom:0} m of train.");
             return result;
