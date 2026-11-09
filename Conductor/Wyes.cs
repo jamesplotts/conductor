@@ -71,14 +71,19 @@ namespace Conductor
                 if (!seen.Add(key))
                     continue;
                 graph.DecodeSwitchAt(toY.End, out TrackSegment yEnter, out _, out _);
-                // Each switch's outward track; the tail is the one that ends soonest.
+                // Each switch's outward track. The tail is the one that dead-ends soonest, followed on
+                // through switches the main way; the main line runs on for miles both ways. (The
+                // nearest switch doesn't tell them apart: at Whittier the main has one 72 m out, at the
+                // depot, while the tail runs 3 km up toward Connelly Creek.) Failing a dead end, the
+                // one with the least room before a switch.
                 var corners = new List<(TrackNode node, TrackSegment outward, float room)>
                 {
                     (s, sEnter, Room(graph, s, sEnter)),
                     (toX.End, xEnter, Room(graph, toX.End, xEnter)),
                     (toY.End, yEnter, Room(graph, toY.End, yEnter)),
                 };
-                var tail = corners.OrderBy(c => c.room).First();
+                var ends = corners.Select(c => (c, reach: Reach(graph, c.node, c.outward, TailSearch, out bool ends), ends)).ToList();
+                var tail = ends.Any(e => e.ends) ? ends.Where(e => e.ends).OrderBy(e => e.reach).First().c : corners.OrderBy(c => c.room).First();
                 // The tail may run on through switches (Whittier's goes on up the Connelly Creek branch):
                 // a train can back up it as far as the track goes the main way.
                 float reach = Reach(graph, tail.node, tail.outward, TailLimit + Clearance + 3f, out bool deadEnd);
@@ -106,7 +111,7 @@ namespace Conductor
                 result.Add(wye);
             }
             foreach (Wye wye in result)
-                ModEntry.Log?.Info($"Conductor: wye near {wye.Name}, tail holds {wye.TailRoom:0} m of train.");
+                ModEntry.Log?.Info($"Conductor: wye near {wye.Name}: main switches {wye.MainA.id} and {wye.MainB.id}, tail switch {wye.Tail.id}; tail holds {wye.TailRoom:0} m of train.");
             return result;
         }
 
@@ -154,6 +159,8 @@ namespace Conductor
 
         // How far a turning train will back up a tail, at most, in meters.
         private const float TailLimit = 800f;
+        // How far to follow each corner's track looking for the tail's dead end, in meters.
+        private const float TailSearch = 6000f;
 
         // The way on from a switch entered at its points: the route with the higher priority, or the
         // normal one.

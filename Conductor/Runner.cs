@@ -245,6 +245,9 @@ namespace Conductor
             return Line.Stations().Where(s => stops.Contains(s.Id) && s.Closed == null).ToList();
         }
 
+        // Engines whose saved run has been looked over since the game loaded.
+        private readonly HashSet<string> _checked = new HashSet<string>();
+
         private void Tick(BaseLocomotive loco, Plan plan)
         {
             if (!plan.Enabled)
@@ -256,6 +259,17 @@ namespace Conductor
             if (plan.Held)
             {
                 Resume(loco, plan);
+                return;
+            }
+            // A whole-train wye turn saved mid-way may have been planned by an older version, so
+            // plan it again from where the train is. (A turn that has cut cars off carries on.)
+            if (_checked.Add(loco.id) && plan.Phase == Phase.Turning && plan.TurnMoves.All(m => StepKind(m) == "go"))
+            {
+                ModEntry.Log?.Info($"Conductor: {loco.DisplayName} was partway through a wye turn when the game was saved; planning it again.");
+                plan.TurnMoves = null;
+                plan.Turned = false;
+                plan.TurnPending = true;
+                Leave(loco, plan, Route(plan));
                 return;
             }
             var ae = new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject));
