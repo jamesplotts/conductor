@@ -47,8 +47,9 @@ namespace Conductor
 
     internal static class Wyes
     {
-        // Keep this far from a switch's points so nothing fouls it, in meters.
-        public const float Clearance = 12f;
+        // Keep this far from a switch's points so nothing fouls it, in meters: 100 feet. Any closer
+        // and a car standing there blocks a train going through the switch the other way.
+        public const float Clearance = 30.5f;
 
         private static List<Wye> _found;
         private static float _foundAt;
