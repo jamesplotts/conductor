@@ -29,6 +29,7 @@ namespace Conductor
         private const double FillStall = 40;
         // Lining-up attempts before giving up on a fuel stop.
         private const int MaxTries = 3;
+        private const int MaxFuelMoves = 6;
         // Aim at the far end of the platform again this close to the station, in meters.
         private const float ReAimMeters = 400f;
         // Fuel stops this close to one just used are topped up too (a water tank beside a coal chute).
@@ -833,7 +834,11 @@ namespace Conductor
                 ModEntry.Log?.Info($"Conductor: {loco.DisplayName} taking {what}, starting at {Fuel.Level(loco, loader.load.id):P0}.");
                 return;
             }
-            if (++plan.Tries > MaxTries)
+            // A pull-up that missed teaches the next one. Backing clear of the spout counts as a
+            // move too, so the limit allows three pull-ups each with a back-up between.
+            if (Fuel.PulledUp(loco))
+                Fuel.NoteMiss(loco, loader);
+            if (++plan.Tries > MaxFuelMoves)
             {
                 Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} couldn't line up for {what} (off by {Fuel.Miss(loco, loader):0.0} m); carrying on.");
                 Head(loco, plan, StationStop(plan));

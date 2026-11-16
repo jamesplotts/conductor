@@ -27,12 +27,51 @@ namespace Conductor
         private static List<CarLoadTargetLoader> _loaders;
         private static List<CarLoaderSequencer> _sequencers;
         private static float _foundAt;
+        // The Auto Engineer stops within about a metre of a waypoint, but a water spout fills only
+        // within half a metre. Each pull-up that misses is measured, and the next one at that spout
+        // aims short (or long) by what the engine has overshot there so far.
+        private static readonly Dictionary<string, float> Overshoot = new Dictionary<string, float>();
+        // Which end of the train led the last pull-up (true: the first car's A end), by engine.
+        private static readonly Dictionary<string, bool> LedByA = new Dictionary<string, bool>();
+        private const float MaxOvershoot = 5f;
         private static readonly FieldInfo SourceIndustryId = typeof(CarLoadTargetLoader).GetField("sourceIndustryId", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
 
         public static void Forget()
         {
             _loaders = null;
             _sequencers = null;
+            Overshoot.Clear();
+            LedByA.Clear();
+        }
+
+        // Whether the last move toward the spout was a pull-up rather than backing clear of it.
+        public static bool PulledUp(BaseLocomotive loco) => LedByA.ContainsKey(loco.id);
+
+        private static string Key(BaseLocomotive loco, CarLoadTargetLoader loader) => loco.id + "|" + loader.keyValueObject?.RegisteredId;
+
+        // After a pull-up that stopped short of filling: how far the filler went past the spout in
+        // the direction the train was moving (negative: it stopped short), learnt for the next try.
+        public static void NoteMiss(BaseLocomotive loco, CarLoadTargetLoader loader)
+        {
+            if (!LedByA.TryGetValue(loco.id, out bool ledByA))
+                return;
+            Car car = FuelCar(loco, loader.load.id, out int slot);
+            if (car == null || !TryFillerPoint(car, slot, Point(loader), out Vector3 filler, out _))
+                return;
+            Graph graph = Graph.Shared;
+            List<Car> train = loco.EnumerateCoupled().ToList();
+            Vector3 aAt = graph.GetPosition(train[0].LocationFor(Car.LogicalEnd.A));
+            Vector3 bAt = graph.GetPosition(train[train.Count - 1].LocationFor(Car.LogicalEnd.B));
+            Vector3 way = ledByA ? aAt - bAt : bAt - aAt;
+            var travel = new Vector2(way.x, way.z).normalized;
+            Vector3 off = filler - Point(loader);
+            float past = Vector2.Dot(new Vector2(off.x, off.z), travel);
+            if (Mathf.Abs(past) > MaxOvershoot)
+                return;
+            string key = Key(loco, loader);
+            Overshoot.TryGetValue(key, out float before);
+            Overshoot[key] = Mathf.Clamp(before + past, -MaxOvershoot, MaxOvershoot);
+            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} went {past:0.00} m past the {Describe(loader.load.id).ToLowerInvariant()} spout; next time it aims {Overshoot[key]:0.00} m short.");
         }
 
         // Found again every half minute: loaders in an area come to life when the area opens.
@@ -213,6 +252,7 @@ namespace Conductor
             {
                 // Under the train: pull the far end away until the near end is a little past the spout.
                 clearing = true;
+                LedByA.Remove(loco.id);
                 target = graph.LocationByMoving(graph.LocationOrientedToward(far, spout), -(Mathf.Min(toA, toB) + 15f), false, true);
                 return true;
             }
@@ -224,6 +264,9 @@ namespace Conductor
             Car.LogicalEnd fuelCarFarEnd = car.ClosestLogicalEndTo(far, graph) ;
             float beyondFiller = Flat(graph.GetPosition(car.LocationFor(fuelCarFarEnd)), filler);
             float past = toFuelCarEnd - beyondFiller;
+            if (Overshoot.TryGetValue(Key(loco, loader), out float overshoot))
+                past -= overshoot;
+            LedByA[loco.id] = nearA;
             target = graph.LocationByMoving(graph.LocationOrientedToward(spout, near), -past, false, true);
             return true;
         }
