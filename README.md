@@ -1,6 +1,6 @@
 # Conductor
 
-A Railroader mod for the 0.6 built-in mod loader.
+A Railroader mod for the 0.6 built-in mod loader. Download it from [Nexus Mods](https://www.nexusmods.com/railroader/mods/2301) or the [Releases](https://github.com/jamesplotts/conductor/releases) page.
 
 Conductor runs a passenger train between the stations you pick. It drives the train with Auto Engineer waypoints, not Road mode, so it can take the train anywhere: station tracks, branches, and fuel stops.
 
