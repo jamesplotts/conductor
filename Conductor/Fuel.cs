@@ -71,7 +71,9 @@ namespace Conductor
             string key = Key(loco, loader);
             Overshoot.TryGetValue(key, out float before);
             Overshoot[key] = Mathf.Clamp(before + past, -MaxOvershoot, MaxOvershoot);
-            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} went {past:0.00} m past the {Describe(loader.load.id).ToLowerInvariant()} spout; next time it aims {Overshoot[key]:0.00} m short.");
+            string what = Describe(loader.load.id).ToLowerInvariant();
+            float aim = Overshoot[key];
+            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} stopped {Mathf.Abs(past):0.00} m {(past >= 0f ? "past" : "short of")} the {what} spout; next time it aims {Mathf.Abs(aim):0.00} m {(aim >= 0f ? "short" : "further")}.");
         }
 
         // Found again every half minute: loaders in an area come to life when the area opens.
