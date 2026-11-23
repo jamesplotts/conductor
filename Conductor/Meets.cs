@@ -36,6 +36,8 @@ namespace Conductor
         private const float FollowAhead = 3000f;
         // How much sooner than the other train this one must be in the siding, in seconds.
         private const float Margin = 60f;
+        // A train farther than this along its way from our route, in meters (about two miles), isn't met yet.
+        private const float NearEnough = 3200f;
 
         private static readonly AccessTools.FieldRef<AutoEngineerPlanner, List<RouteSearch.Step>> RouteField =
             AccessTools.FieldRefAccess<AutoEngineerPlanner, List<RouteSearch.Step>>("_route");
@@ -76,6 +78,11 @@ namespace Conductor
                     continue;
                 List<Leg> path = PathOf(other, theirs);
                 if (path == null || !Opposing(ours, path))
+                    continue;
+                // Far off (switching up a branch, say): not coming yet. Look again as it gets closer.
+                var ourSegments = new HashSet<TrackSegment>(ours.Select(l => l.Segment));
+                Leg first = path.FirstOrDefault(l => ourSegments.Contains(l.Segment));
+                if (first.Segment != null && first.At > NearEnough)
                     continue;
                 oncoming = other;
                 return Choose(graph, loco, train, ours, other, path, mph, out why);
@@ -231,7 +238,7 @@ namespace Conductor
         {
             var ae = new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject));
             if (ae.Mode == AutoEngineerMode.Waypoint)
-                return ae.Orders.Waypoint.HasValue ? RouteOf(loco, LookAhead) : null;
+                return ae.Orders.Waypoint.HasValue ? RouteOf(loco, LookAhead, true) : null;
             float v = loco.velocity;
             if (Mathf.Abs(v) < 0.5f)
             {
@@ -286,7 +293,8 @@ namespace Conductor
         }
 
         // The rest of a train's Auto Engineer route, as far as this.
-        private static List<Leg> RouteOf(BaseLocomotive loco, float limit)
+        // untilReversal: stop where the train changes direction (a switching move doesn't come on past it).
+        private static List<Leg> RouteOf(BaseLocomotive loco, float limit, bool untilReversal = false)
         {
             AutoEngineerPlanner planner = loco.AutoEngineerPlanner;
             if (planner == null)
@@ -299,6 +307,8 @@ namespace Conductor
             float at = 0f;
             for (int i = start + 1; i < route.Count && at < limit; i++)
             {
+                if (untilReversal && route[i].LeadingEnd != route[i - 1].LeadingEnd && at > 2f)
+                    break;
                 TrackSegment segment = route[i].Location.segment;
                 if (segment == null)
                     continue;

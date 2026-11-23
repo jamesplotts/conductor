@@ -14,8 +14,10 @@ using Model.Ops.Definition;
 using Network;
 using RollingStock;
 using Track;
+using Track.Search;
 using UI.EngineControls;
 using UnityEngine;
+using TT = Model.Ops.Timetable.Timetable;
 
 namespace Conductor
 {
@@ -44,6 +46,13 @@ namespace Conductor
         private const float LookEvery = 5f;
         // Give up waiting for a train that doesn't come, in game seconds.
         private const double MeetPatience = 30 * 60;
+        // Give up a meet when the other train hasn't come MeetCloser meters nearer in MeetStall game seconds.
+        private const double MeetStall = 5 * 60;
+        private const float MeetCloser = 30f;
+        // A train given up on isn't waited for again for this long, in game seconds.
+        private const double MeetSkip = 15 * 60;
+        private readonly Dictionary<string, (string other, double until)> _meetSkip = new Dictionary<string, (string, double)>();
+        private readonly Dictionary<string, (float gap, double at)> _meetGap = new Dictionary<string, (float, double)>();
 
         public static void Install()
         {
@@ -81,7 +90,7 @@ namespace Conductor
                 }
                 catch (Exception ex)
                 {
-                    ModEntry.Log?.Error("Conductor: " + ex);
+                    Journal.Error("Conductor: " + ex);
                 }
             }
         }
@@ -106,6 +115,8 @@ namespace Conductor
         public static string Begin(BaseLocomotive loco)
         {
             var plan = new Plan(loco);
+            if (plan.Timetable)
+                return BeginTimetable(loco, plan);
             List<Station> route = Route(plan);
             if (route.Count < 2)
                 return "Pick at least two stations to run between.";
@@ -134,14 +145,59 @@ namespace Conductor
             else
                 Head(loco, plan, NextFromHere(loco, plan, route));
             string toward = plan.Direction > 0 ? route.Last().Name : route.First().Name;
-            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} starting near {route[nearest].Name}, going toward {toward}.");
+            Journal.Info($"Conductor: {loco.DisplayName} starting near {route[nearest].Name}, going toward {toward}.");
             Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} is running {route.First().Name} to {route.Last().Name}, going toward {toward} first.");
+            return null;
+        }
+
+        // Timetable mode: run the ticked train that's due away soonest from the station nearest the
+        // train, or, if none calls there, the one due away soonest anywhere, from its first station.
+        private static string BeginTimetable(BaseLocomotive loco, Plan plan)
+        {
+            if (Timetables.Current == null)
+                return "The game's timetable is off or empty. Turn it on and add passenger trains, or turn Timetable Mode off.";
+            HashSet<string> ticked = plan.TimetableTrains;
+            List<TT.Train> trains = Timetables.PassengerTrains().Where(t => ticked.Contains(t.Name)).ToList();
+            if (trains.Count == 0)
+                return "Tick at least one timetable train for this engine to run.";
+            Vector3 at = Graph.Shared.GetPosition(loco.LocationF);
+            Station nearest = trains.SelectMany(Timetables.Stations).Where(st => st.Closed == null)
+                .OrderBy(st => Fuel.Flat(at, Graph.Shared.GetPosition(Platform(st.Stop, loco).GetValueOrDefault(loco.LocationF)))).FirstOrDefault();
+            TT.Train train = nearest != null ? Timetables.NextFrom(plan, nearest.Id) : null;
+            string startId = nearest?.Id;
+            if (train == null)
+            {
+                train = Timetables.Soonest(plan);
+                startId = train != null ? Timetables.Stations(train).FirstOrDefault()?.Id : null;
+            }
+            if (train == null || startId == null)
+                return "None of the ticked timetable trains can be run from here.";
+            plan.TimetableTrain = train.Name;
+            List<Station> route = Route(plan);
+            if (route.Count < 2)
+                return $"Train {train.DisplayStringShort} doesn't call at two open stations.";
+            Station start = route.First(st => st.Id == startId);
+            plan.Direction = 1;
+            plan.Running = true;
+            WaypointMode(loco, plan);
+            plan.Enabled = true;
+            plan.Held = false;
+            plan.Tries = 0;
+            plan.Loader = "";
+            if (AtStation(loco, start.Stop))
+                Arrive(loco, plan, start.Stop);
+            else
+                Head(loco, plan, start.Stop);
+            double? due = Timetables.Departure(train, start.Id);
+            Journal.Info($"Conductor: {loco.DisplayName} running timetable train {train.DisplayStringShort} from {start.Name}.");
+            Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} is running timetable train {train.DisplayStringShort} from {start.Name}{(due.HasValue ? ", due away at " + Timetables.Clock(due.Value) : "")}.");
             return null;
         }
 
         public static void End(BaseLocomotive loco, string why)
         {
             var plan = new Plan(loco);
+            plan.TurnHold = false;
             if (plan.Phase == Phase.Fueling)
             {
                 CarLoadTargetLoader loader = Fuel.Find(plan.Loader);
@@ -213,7 +269,7 @@ namespace Conductor
                     break;
                 case Phase.Turning:
                     string[] steps = plan.TurnMoves;
-                    if (plan.TurnStep < steps.Length && (StepKind(steps[plan.TurnStep]) == "go" || StepKind(steps[plan.TurnStep]) == "couple"))
+                    if (plan.TurnStep < steps.Length && IsMove(steps[plan.TurnStep]))
                         IssueStep(loco, plan, steps[plan.TurnStep]);
                     break;
                 // At a station the dwell starts over; leaving sends the train on as usual.
@@ -222,24 +278,63 @@ namespace Conductor
         }
 
         // Turns the train around: it carries on to the station behind it.
+        // Turn Back: the train goes back the way it came, to the station it last left, and runs
+        // the line the other way from there. Works however far through the trip it is: heading
+        // for a station, pulled into a siding for a meet, at a fuel stop, or standing at a platform.
         public static void Reverse(BaseLocomotive loco)
         {
             var plan = new Plan(loco);
-            plan.Direction = -plan.Direction;
-            if (!plan.Running || plan.Phase != Phase.ToStation)
+            if (!plan.Running)
+            {
+                plan.Direction = -plan.Direction;
                 return;
+            }
+            if (plan.Timetable)
+                return; // the button isn't offered in Timetable mode
             List<Station> route = Route(plan);
-            int i = route.FindIndex(s => s.Id == plan.Station);
-            if (i < 0)
+            if (route.Count < 2)
                 return;
-            int back = i + plan.Direction;
-            if (back >= 0 && back < route.Count)
-                Head(loco, plan, route[back].Stop);
+            switch (plan.Phase)
+            {
+                case Phase.Turning:
+                    plan.Status = "Turning on the wye: Turn Back once it's done.";
+                    Journal.Info($"Conductor: {loco.DisplayName} Turn Back ignored: it's partway through a wye turn.");
+                    return;
+                case Phase.Layover:
+                    plan.Direction = -plan.Direction;
+                    Journal.Info($"Conductor: {loco.DisplayName} Turn Back: after the layover it'll go toward {End(route, plan.Direction)}.");
+                    return;
+                case Phase.AtStation:
+                    plan.Direction = -plan.Direction;
+                    Journal.Info($"Conductor: {loco.DisplayName} Turn Back: it'll leave {Name(route, plan.Station)} toward {End(route, plan.Direction)}.");
+                    plan.Status = $"At {Name(route, plan.Station)}; leaving toward {End(route, plan.Direction)}";
+                    return;
+            }
+            // On the way somewhere (a station, a meet siding, a fuel stop): back to the station behind.
+            int i = route.FindIndex(st => st.Id == plan.Station);
+            plan.Direction = -plan.Direction;
+            int back = i < 0 ? -1 : i + plan.Direction;
+            if (i >= 0 && (back < 0 || back >= route.Count))
+                back = i;
+            PassengerStop target = back >= 0 ? route[back].Stop : Next(plan, route, plan.Station);
+            plan.MeetWith = "";
+            plan.MeetSiding = "";
+            plan.MeetSpot = "";
+            plan.MeetWaiting = false;
+            plan.Loader = "";
+            Journal.Info($"Conductor: {loco.DisplayName} Turn Back: heading back to {target.DisplayName}, then on toward {End(route, plan.Direction)}.");
+            Head(loco, plan, target);
         }
+
+        private static string End(List<Station> route, int direction) => direction > 0 ? route[route.Count - 1].Name : route[0].Name;
+
+        private static string Name(List<Station> route, string id) => route.FirstOrDefault(st => st.Id == id)?.Name ?? id;
 
         // The stations this train calls at, in order down the line, open ones only.
         public static List<Station> Route(Plan plan)
         {
+            if (plan.Timetable)
+                return Timetables.Stations(Timetables.Find(plan.TimetableTrain)).Where(s => s.Closed == null).ToList();
             HashSet<string> stops = plan.Stops;
             return Line.Stations().Where(s => stops.Contains(s.Id) && s.Closed == null).ToList();
         }
@@ -262,9 +357,9 @@ namespace Conductor
             }
             // A whole-train wye turn saved mid-way may have been planned by an older version, so
             // plan it again from where the train is. (A turn that has cut cars off carries on.)
-            if (_checked.Add(loco.id) && plan.Phase == Phase.Turning && plan.TurnMoves.All(m => StepKind(m) == "go"))
+            if (_checked.Add(loco.id) && plan.Phase == Phase.Turning && plan.TurnMoves.All(m => StepKind(m) == "go" || StepKind(m) == "via"))
             {
-                ModEntry.Log?.Info($"Conductor: {loco.DisplayName} was partway through a wye turn when the game was saved; planning it again.");
+                Journal.Info($"Conductor: {loco.DisplayName} was partway through a wye turn when the game was saved; planning it again.");
                 plan.TurnMoves = null;
                 plan.Turned = false;
                 plan.TurnPending = true;
@@ -283,7 +378,7 @@ namespace Conductor
             // the train over rather than fight over it.
             if (ae.Mode == AutoEngineerMode.Waypoint && ae.Orders.Waypoint.HasValue && !OurWaypoint(plan, ae.Orders.Waypoint.Value.LocationString))
             {
-                ModEntry.Log?.Info($"Conductor: {loco.DisplayName}'s waypoint was changed to {ae.Orders.Waypoint.Value.LocationString} (Conductor's was {plan.Sent}); handing over.");
+                Journal.Info($"Conductor: {loco.DisplayName}'s waypoint was changed to {ae.Orders.Waypoint.Value.LocationString} (Conductor's was {plan.Sent}); handing over.");
                 End(loco, "Stopped: something else changed the Auto Engineer's waypoint.");
                 Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} handed over; something else changed its waypoint (by hand, or another mod such as Waypoint Queue).");
                 return;
@@ -291,7 +386,13 @@ namespace Conductor
             List<Station> route = Route(plan);
             if (route.Count < 2)
             {
-                End(loco, "Stopped: fewer than two open stations are picked.");
+                if (plan.Timetable)
+                {
+                    End(loco, $"Stopped: timetable train {plan.TimetableTrain} isn't in the timetable any more, or calls at fewer than two open stations.");
+                    Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} stopped; timetable train {plan.TimetableTrain} isn't in the timetable any more.");
+                }
+                else
+                    End(loco, "Stopped: fewer than two open stations are picked.");
                 return;
             }
             switch (plan.Phase)
@@ -368,6 +469,11 @@ namespace Conductor
             plan.Tries = 0;
             plan.Turned = false;
             plan.Parked = false;
+            if (plan.Timetable)
+            {
+                ArriveTimetable(loco, plan, stop);
+                return;
+            }
             List<Station> route = Route(plan);
             // Leaving from an end of the line, the train goes back the other way.
             int i = route.FindIndex(s => s.Id == stop.identifier);
@@ -380,6 +486,55 @@ namespace Conductor
             // Board passengers for the stations ahead.
             SetDestinations(loco, plan.LayingUp ? new List<string>() : Ahead(plan, route, stop.identifier));
             plan.Status = $"At {stop.DisplayName}";
+        }
+
+        // In a long gap before the next timetable train, park rather than stand at the platform.
+        private const double TimetableLayUpGap = 90 * 60;
+        // Come back to the station this long before the train is due away.
+        private const double TimetableComeBack = 30 * 60;
+
+        // Timetable mode: at the last stop of a train, take up the next ticked train that leaves from
+        // here; board passengers for the stations still ahead on the train being run.
+        private static void ArriveTimetable(BaseLocomotive loco, Plan plan, PassengerStop stop)
+        {
+            plan.Direction = 1;
+            List<Station> route = Route(plan);
+            int i = route.FindIndex(s => s.Id == stop.identifier);
+            if (i < 0 || i == route.Count - 1)
+            {
+                TT.Train next = Timetables.NextFrom(plan, stop.identifier, plan.TimetableTrain);
+                if (next != null)
+                {
+                    string done = plan.TimetableTrain;
+                    plan.TimetableTrain = next.Name;
+                    route = Route(plan);
+                    i = route.FindIndex(s => s.Id == stop.identifier);
+                    double? due = Timetables.Departure(next, stop.identifier);
+                    Journal.Info($"Conductor: {loco.DisplayName} done as train {done}; next is {next.DisplayStringShort} from {stop.DisplayName}.");
+                    Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} goes out as train {next.DisplayStringShort}{(due.HasValue ? ", due away from " + stop.DisplayName + " at " + Timetables.Clock(due.Value) : "")}.");
+                }
+            }
+            bool more = i >= 0 && i < route.Count - 1;
+            double? dep = more ? Timetables.Departure(Timetables.Find(plan.TimetableTrain), stop.identifier) : null;
+            plan.LayingUp = plan.LayUp && i == 0 && dep.HasValue && dep.Value - TimeWeather.Now.TotalSeconds > TimetableLayUpGap;
+            SetDestinations(loco, plan.LayingUp || !more ? new List<string>() : route.Skip(i + 1).Select(s => s.Id).ToList());
+            plan.Status = $"At {stop.DisplayName}";
+        }
+
+        // Timetable mode, laid up: until TimetableComeBack before the train is due away.
+        private static bool TimetableLaidUp(Plan plan, out string until)
+        {
+            double? dep = Timetables.Departure(Timetables.Find(plan.TimetableTrain), plan.Station);
+            until = dep.HasValue ? Timetables.Clock(dep.Value - TimetableComeBack) : "the next train";
+            return dep.HasValue && TimeWeather.Now.TotalSeconds < dep.Value - TimetableComeBack;
+        }
+
+        private static string ResumeText(Plan plan)
+        {
+            if (!plan.Timetable)
+                return Layover.Clock(plan.ResumeMinutes);
+            TimetableLaidUp(plan, out string until);
+            return until;
         }
 
         private void AtStation(BaseLocomotive loco, Plan plan, List<Station> route)
@@ -400,23 +555,54 @@ namespace Conductor
             {
                 plan.Status = getting > 0 ? $"At {stop.DisplayName}, last run done: {getting.Pluralize("passenger")} getting off" : $"At {stop.DisplayName}, last run done";
                 int aboard = coaches.Sum(c => (c.GetPassengerMarker() ?? PassengerMarker.Empty()).TotalPassengers);
-                if (waited < MinDwell || aboard > 0)
+                if (waited < Math.Max(MinDwell, plan.MinStopSeconds) || aboard > 0)
                     return;
                 StartLayover(loco, plan, stop);
                 return;
             }
+            int seated = coaches.Sum(c => (c.GetPassengerMarker() ?? PassengerMarker.Empty()).TotalPassengers);
+            int seats = coaches.Sum(Seats);
+            int pct = seats > 0 ? seated * 100 / seats : 100;
+            int hold = plan.HoldFor(stop.identifier);
+            bool holding = hold > 0 && !full && pct < hold && waited < plan.HoldMaxMinutes * 60.0;
             if (getting > 0)
                 plan.Status = $"At {stop.DisplayName}: {getting.Pluralize("passenger")} getting off";
             else if (waiting > 0 && !full)
                 plan.Status = $"At {stop.DisplayName}: {waiting} boarding";
+            else if (holding)
+                plan.Status = $"At {stop.DisplayName}: {pct}% full, waiting for {hold}% (up to {Layover.Clock((int)((long)((plan.Since + plan.HoldMaxMinutes * 60.0) / 60.0) % (24 * 60)))})";
             else
                 plan.Status = $"At {stop.DisplayName}: all aboard";
-            if (waited < MinDwell || getting > 0 || (waiting > 0 && !full))
+            if (plan.Timetable)
+            {
+                int ti = route.FindIndex(s => s.Id == stop.identifier);
+                if (ti < 0 || ti == route.Count - 1)
+                {
+                    // The end of this train's run and no ticked train goes on from here (yet).
+                    if (getting > 0)
+                        return;
+                    if (Timetables.NextFrom(plan, stop.identifier, plan.TimetableTrain) != null)
+                    {
+                        Arrive(loco, plan, stop);
+                        return;
+                    }
+                    plan.Status = $"At {stop.DisplayName}: train {plan.TimetableTrain} done; no ticked timetable train leaves from here";
+                    return;
+                }
+                double? dep = Timetables.Departure(Timetables.Find(plan.TimetableTrain), stop.identifier);
+                if (dep.HasValue && TimeWeather.Now.TotalSeconds < dep.Value)
+                {
+                    if (getting == 0 && !(waiting > 0 && !full) && !holding)
+                        plan.Status = $"At {stop.DisplayName}: train {plan.TimetableTrain}, due away at {Timetables.Clock(dep.Value)}";
+                    return;
+                }
+            }
+            if (waited < Math.Max(MinDwell, plan.MinStopSeconds) || getting > 0 || (waiting > 0 && !full) || holding)
                 return;
             // The cutoff came while it stood at an end: lay up rather than start a run, unless
             // someone has already boarded.
             int at = route.FindIndex(s => s.Id == stop.identifier);
-            if (plan.LayUp && (at == 0 || at == route.Count - 1) && Layover.IsNight(plan)
+            if (!plan.Timetable && plan.LayUp && (at == 0 || at == route.Count - 1) && Layover.IsNight(plan)
                 && coaches.Sum(c => (c.GetPassengerMarker() ?? PassengerMarker.Empty()).TotalPassengers) == 0)
             {
                 plan.LayingUp = true;
@@ -424,7 +610,10 @@ namespace Conductor
                 StartLayover(loco, plan, stop);
                 return;
             }
-            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} leaving {stop.DisplayName}: boarding for {string.Join(", ", ahead)}; {waiting} still waiting for them, coaches {(full ? "full" : "not full")}.");
+            Journal.Info($"Conductor: {loco.DisplayName} leaving {stop.DisplayName} after {waited / 60:0.#} min: {seated} of {seats} seats taken ({pct}%), boarding for {string.Join(", ", ahead)}; {waiting} still waiting for them, coaches {(full ? "full" : "not full")}"
+                + (hold > 0 ? $"; holding for {hold}%{(pct < hold && !full ? $", gave up after {plan.HoldMaxMinutes} min" : "")}" : "") + ".");
+            if (full && waiting > 0)
+                Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} is full ({seated} of {seats} seats) leaving {stop.DisplayName}; {waiting.Pluralize("passenger")} left waiting. Another coach would carry them.");
             Leave(loco, plan, route);
         }
 
@@ -435,12 +624,12 @@ namespace Conductor
             int at = route.FindIndex(s => s.Id == plan.Station);
             bool atEnd = at == 0 || at == route.Count - 1;
             string here = at >= 0 ? route[at].Name : plan.Station;
-            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} wye check at {here}: turn on wyes {plan.TurnOnWyes}, end of line {atEnd}, turn pending {plan.TurnPending}, already turned {plan.Turned}.");
+            Journal.Info($"Conductor: {loco.DisplayName} wye check at {here}: turn on wyes {plan.TurnOnWyes}, end of line {atEnd}, turn pending {plan.TurnPending}, already turned {plan.Turned}.");
             if (plan.TurnOnWyes && !plan.Turned && (atEnd || plan.TurnPending))
             {
                 plan.Turned = true;
                 string note = StartTurn(loco, plan, next, out bool noWyeHere);
-                ModEntry.Log?.Info($"Conductor: {loco.DisplayName} wye check at {here}: {(note == null ? "turning" : noWyeHere ? "no wye here, turn pending" : note.Length == 0 ? "no turn needed" : note)}.");
+                Journal.Info($"Conductor: {loco.DisplayName} wye check at {here}: {(note == null ? "turning" : noWyeHere ? "no wye here, turn pending" : note.Length == 0 ? "no turn needed" : note)}.");
                 if (note == null)
                 {
                     plan.TurnPending = false;
@@ -480,7 +669,7 @@ namespace Conductor
             Location? platform = Platform(next, loco);
             if (platform == null)
             {
-                ModEntry.Log?.Info($"Conductor: {loco.DisplayName} wye check: no platform found at {next?.DisplayName}, so no turn.");
+                Journal.Info($"Conductor: {loco.DisplayName} wye check: no platform found at {next?.DisplayName}, so no turn.");
                 return "";
             }
             Vector3 toward = graph.GetPosition(platform.Value);
@@ -496,7 +685,7 @@ namespace Conductor
             string stationId = plan.Station;
             Wye wye = Wyes.All().Where(w => w.StopId == stationId && Fuel.Flat(w.Center, front) < 3000f).OrderBy(w => Fuel.Flat(w.Center, front)).FirstOrDefault();
             string wyes = string.Join(", ", Wyes.All().Select(w => $"{w.Name} ({w.StopId}, {Fuel.Flat(w.Center, front):0} m off, tail {w.TailRoom:0} m)"));
-            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} wye check at {stationId} for {next.DisplayName}: engine front {Fuel.Flat(front, toward):0} m and back {Fuel.Flat(back, toward):0} m from the next platform (facing {facing}), "
+            Journal.Info($"Conductor: {loco.DisplayName} wye check at {stationId} for {next.DisplayName}: engine front {Fuel.Flat(front, toward):0} m and back {Fuel.Flat(back, toward):0} m from the next platform (facing {facing}), "
                 + $"engine end {Fuel.Flat(front, toward):0} m vs far end {Fuel.Flat(farEnd, toward):0} m (engine at front {atFront}), train {length:0} m; "
                 + $"this station's wye: {(wye != null ? wye.Name : "none")}; all wyes: {(wyes.Length > 0 ? wyes : "none")}.");
             if (atFront && facing)
@@ -518,12 +707,13 @@ namespace Conductor
                 steps = Turns.PlanEngine(loco, wye, toward, needTurn, plan.Parked, out string why);
                 if (steps == null)
                 {
-                    ModEntry.Log?.Info($"Conductor: {loco.DisplayName} wye check: engine-only turn not possible: {why}");
+                    Journal.Info($"Conductor: {loco.DisplayName} wye check: engine-only turn not possible: {why}");
                     return why;
                 }
             }
-            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} wye check: turn planned, {steps.Count} steps: {string.Join(" / ", steps)}");
+            Journal.Info($"Conductor: {loco.DisplayName} wye check: turn planned, {steps.Count} steps: {string.Join(" / ", steps)}");
             plan.TurnMoves = steps.ToArray();
+            plan.TurnHold = false;
             plan.TurnStep = 0;
             plan.Tries = 0;
             plan.Phase = Phase.Turning;
@@ -533,13 +723,68 @@ namespace Conductor
 
         // Through switches, into wye tails and up to coaches at yard speed.
         private static int TurnMph(Plan plan) => Math.Min(10, plan.SpeedMph);
+        // Through wyes and around trains: the Turn Speed setting.
+        private static int MoveMph(Plan plan) => Math.Min(plan.TurnSpeedMph, plan.SpeedMph);
+
+        // A "via" waypoint only steers the train through the right switch (halfway along a wye leg, or
+        // along the far track of a run-around). The train doesn't stop there: within this many meters of
+        // it, the next move is given and the train runs straight on.
+        private const float ViaReach = 30f;
+
+        private static bool IsMove(string step) => StepKind(step) == "go" || StepKind(step) == "via" || StepKind(step) == "couple";
+
+        private static bool NearVia(BaseLocomotive loco, string step)
+        {
+            string[] p = step.Split(Turns.Sep);
+            Graph graph = Graph.Shared;
+            Vector3 via = graph.GetPosition(graph.ResolveLocationString(p[1]));
+            List<Car> train = loco.EnumerateCoupled().ToList();
+            Vector3 a = graph.GetPosition(train[0].LocationFor(Car.LogicalEnd.A));
+            Vector3 b = graph.GetPosition(train[train.Count - 1].LocationFor(Car.LogicalEnd.B));
+            return Mathf.Min(Fuel.Flat(a, via), Fuel.Flat(b, via)) < ViaReach;
+        }
+
+        // How often a held turn move is tried again, and a move under way checked for a detour, in game seconds.
+        private const double TurnRetry = 20, TurnRecheck = 10;
 
         private void Turning(BaseLocomotive loco, Plan plan, AutoEngineerOrdersHelper ae, List<Station> route)
         {
-            if (!loco.IsStopped(2f) || ae.Orders.Waypoint.HasValue)
-                return;
             string[] steps = plan.TurnMoves;
             int current = plan.TurnStep;
+            double now = TimeWeather.Now.TotalSeconds;
+            if (plan.TurnHold)
+            {
+                if (current < steps.Length && now - plan.Since >= TurnRetry)
+                    IssueStep(loco, plan, steps[current]);
+                return;
+            }
+            // Something moved into the way after the move began: the Auto Engineer would go round by
+            // reversing (through the wye's tail, say), which spoils the turn. Stop and wait instead.
+            if (current < steps.Length && IsMove(steps[current]) && ae.Orders.Waypoint.HasValue && now - plan.TurnChecked >= TurnRecheck)
+            {
+                plan.TurnChecked = now;
+                if (!StraightRoute(loco, steps[current], out string why))
+                {
+                    ae.ClearWaypoint();
+                    Hold(loco, plan, why);
+                    return;
+                }
+            }
+            if (current + 1 < steps.Length && StepKind(steps[current]) == "via" && IsMove(steps[current + 1]) && !loco.IsStopped(2f))
+            {
+                bool near;
+                try { near = NearVia(loco, steps[current]); }
+                catch (Exception) { near = false; }
+                if (near)
+                {
+                    plan.TurnStep = current + 1;
+                    plan.Tries = 0;
+                    IssueStep(loco, plan, steps[current + 1]);
+                    return;
+                }
+            }
+            if (!loco.IsStopped(2f) || ae.Orders.Waypoint.HasValue)
+                return;
             if (current < steps.Length)
             {
                 string problem = FinishStep(loco, plan, steps[current]);
@@ -577,7 +822,7 @@ namespace Conductor
             {
                 Vector3 toward = Graph.Shared.GetPosition(platform.Value);
                 bool facing = Fuel.Flat(Graph.Shared.GetPosition(loco.LocationF), toward) < Fuel.Flat(Graph.Shared.GetPosition(loco.LocationR), toward);
-                ModEntry.Log?.Info($"Conductor: {loco.DisplayName} turn done; engine {(facing ? "faces" : "does NOT face")} {after.DisplayName}.");
+                Journal.Info($"Conductor: {loco.DisplayName} turn done; engine {(facing ? "faces" : "does NOT face")} {after.DisplayName}.");
             }
             Leave(loco, plan, route);
         }
@@ -589,13 +834,23 @@ namespace Conductor
         {
             plan.Since = TimeWeather.Now.TotalSeconds;
             string[] p = step.Split(Turns.Sep);
-            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} turn step {plan.TurnStep + 1} of {plan.TurnMoves.Length}: {step}");
+            if (IsMove(step) && !StraightRoute(loco, step, out string why))
+            {
+                Hold(loco, plan, why);
+                return;
+            }
+            if (plan.TurnHold)
+                Journal.Info($"Conductor: {loco.DisplayName} way is clear again.");
+            plan.TurnHold = false;
+            plan.TurnChecked = plan.Since;
+            Journal.Info($"Conductor: {loco.DisplayName} turn step {plan.TurnStep + 1} of {plan.TurnMoves.Length}: {step}");
             var ae = new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject));
             switch (StepKind(step))
             {
                 case "go":
+                case "via":
                     // A bare location is a turn saved by an older version.
-                    Order(loco, plan, new OrderWaypoint(p.Length > 1 ? p[1] : p[0], null), TurnMph(plan));
+                    Order(loco, plan, new OrderWaypoint(p.Length > 1 ? p[1] : p[0], null), MoveMph(plan));
                     if (p.Length > 2)
                         plan.Status = p[2];
                     break;
@@ -613,6 +868,95 @@ namespace Conductor
                     break;
             }
         }
+
+        private static void Hold(BaseLocomotive loco, Plan plan, string why)
+        {
+            if (!plan.TurnHold)
+            {
+                Journal.Info($"Conductor: {loco.DisplayName} holding turn step {plan.TurnStep + 1}: {why}");
+                Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} is waiting to turn: {why}");
+            }
+            plan.TurnHold = true;
+            plan.Since = TimeWeather.Now.TotalSeconds;
+            plan.Status = "Turning: waiting for the track to clear. " + why;
+        }
+
+        // Whether the Auto Engineer can make a turn move without reversing on the way. Its route search
+        // counts reversing as free, so with the direct way blocked (cars on the main, another train) it
+        // goes round by a wye's tail or a siding instead, which turns the train when it shouldn't.
+        private static bool StraightRoute(BaseLocomotive loco, string step, out string why)
+        {
+            why = null;
+            try
+            {
+                string[] p = step.Split(Turns.Sep);
+                bool couple = StepKind(step) == "couple";
+                string target = p.Length > 1 ? p[1] : p[0];
+                var waypoint = new OrderWaypoint(target, couple ? p[2] : null);
+                var ae = new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject));
+                List<Car> cars = loco.EnumerateCoupled().ToList();
+                float length = AutoEngineerPlanner.CalculateTotalLength(cars);
+                if (!AutoEngineerPlanner.TryPlanRoute(loco, cars, length, ae.Orders.Forward, waypoint, Graph.Shared,
+                        out _, out List<RouteSearch.Step> route, out string message, out _, out _))
+                {
+                    why = string.IsNullOrEmpty(message) ? "there's no way through." : message.Replace(loco.DisplayName, "").Trim();
+                    return false;
+                }
+                // Some moves reverse by design (pull past a switch, then back into the leg). Only a reversal
+                // the empty-track route doesn't make is a detour round something in the way.
+                int withCars = Reversals(route), clear = withCars;
+                bool stopped = loco.IsStopped();
+                bool fwd = stopped ? ae.Orders.Forward : loco.velocity >= 0f;
+                Location start;
+                ConsistEnd startEnd;
+                if (loco.EndToLogical(fwd ? Car.End.F : Car.End.R) == Car.LogicalEnd.A)
+                {
+                    start = loco.EnumerateCoupled().First().WheelBoundsA;
+                    startEnd = ConsistEnd.A;
+                }
+                else
+                {
+                    start = loco.EnumerateCoupled(Car.LogicalEnd.B).First().WheelBoundsB.Flipped();
+                    startEnd = ConsistEnd.B;
+                }
+                var free = new List<RouteSearch.Step>();
+                Location end = Graph.Shared.ResolveLocationString(target);
+                if (Graph.Shared.FindRoute(start, end, HeuristicCosts.AutoEngineer, free, out _, false, length, 0f, 5000, null, null, null, false, startEnd))
+                    clear = Reversals(free);
+                if (withCars > clear)
+                {
+                    why = "the direct way is blocked, and it would have to back up on the way.";
+                    Journal.Info($"Conductor: {loco.DisplayName} route to {target} reverses {withCars}x, {clear}x on clear track. With cars: {Describe(route)} / clear: {Describe(free)}");
+                    return false;
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                // Can't tell: go ahead as before.
+                Journal.Warning($"Conductor: couldn't check the route for {loco.DisplayName}: {ex.Message}");
+                return true;
+            }
+        }
+
+        // Changes of direction along a route, not counting one right at the start (setting back after a stop).
+        private static int Reversals(List<RouteSearch.Step> route)
+        {
+            int n = 0;
+            ConsistEnd? lead = null;
+            float gone = 0f;
+            foreach (RouteSearch.Step s in route)
+            {
+                if (lead.HasValue && s.LeadingEnd != lead.Value && gone > 2f)
+                    n++;
+                lead = s.LeadingEnd;
+                gone += Mathf.Abs(s.Distance);
+            }
+            return n;
+        }
+
+        private static string Describe(List<RouteSearch.Step> route) =>
+            string.Join(" ", route.Select(s => $"{s.Location.segment?.id}:{s.LeadingEnd}:{s.Distance:0}"));
 
         // Whether a step is done: null when it is, "" to wait, otherwise what went wrong.
         private static string FinishStep(BaseLocomotive loco, Plan plan, string step)
@@ -655,8 +999,8 @@ namespace Conductor
             if (spot.HasValue)
                 Send(loco, plan, spot.Value, TurnMph(plan));
             plan.Status = $"Going to park for the night {where}";
-            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} laying up for the night {where}.");
-            Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} is done for the night and will lay up {where} until {Layover.Clock(plan.ResumeMinutes)}.");
+            Journal.Info($"Conductor: {loco.DisplayName} laying up for the night {where}.");
+            Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} is done for the night and will lay up {where} until {ResumeText(plan)}.");
         }
 
         // Parked for the night; in the morning, back to the station to pick up passengers.
@@ -668,9 +1012,10 @@ namespace Conductor
                     return;
                 plan.ParkedUp = true;
             }
-            if (Layover.IsNight(plan))
+            string until = null;
+            if (plan.Timetable ? TimetableLaidUp(plan, out until) : Layover.IsNight(plan))
             {
-                plan.Status = $"Laid up {plan.ParkedAt} until {Layover.Clock(plan.ResumeMinutes)}";
+                plan.Status = $"Laid up {plan.ParkedAt} until {until ?? Layover.Clock(plan.ResumeMinutes)}";
                 return;
             }
             plan.LayingUp = false;
@@ -690,6 +1035,9 @@ namespace Conductor
                 return false;
             _lookedAhead[loco.id] = now;
             Meet meet = Meets.Find(loco, plan.SpeedMph, out BaseLocomotive other, out string why);
+            if (meet != null && _meetSkip.TryGetValue(loco.id, out (string other, double until) skip)
+                && skip.other == other.id && TimeWeather.Now.TotalSeconds < skip.until)
+                return false;
             if (meet == null)
             {
                 if (other != null && why != null && plan.MeetWarned != other.id)
@@ -737,10 +1085,28 @@ namespace Conductor
             if (plan.MeetWaiting)
                 plan.Status = $"Waiting for {(other != null ? other.DisplayName : "a train")} to pass";
             bool passed = Meets.Passed(other, siding);
-            bool tired = plan.MeetWaiting && TimeWeather.Now.TotalSeconds - plan.Since > MeetPatience;
-            if (!passed && !tired)
+            double now = TimeWeather.Now.TotalSeconds;
+            bool tired = plan.MeetWaiting && now - plan.Since > MeetPatience;
+            // A train that isn't getting any closer (switching a yard, say, or parked) isn't coming.
+            bool stalled = false;
+            if (plan.MeetWaiting && other != null && !passed)
+            {
+                float gap = Fuel.Flat(Graph.Shared.GetPosition(loco.LocationF), Graph.Shared.GetPosition(other.LocationF));
+                if (!_meetGap.TryGetValue(loco.id, out (float gap, double at) best) || gap < best.gap - MeetCloser)
+                    _meetGap[loco.id] = best = (gap, now);
+                stalled = now - best.at > MeetStall;
+            }
+            if (!passed && !tired && !stalled)
                 return;
-            if (tired && !passed)
+            _meetGap.Remove(loco.id);
+            if (!passed && other != null)
+                _meetSkip[loco.id] = (other.id, now + MeetSkip);
+            if (stalled && !passed)
+            {
+                Journal.Info($"Conductor: {loco.DisplayName} gave up the meet with {other.DisplayName}: no closer in {MeetStall / 60:0} minutes.");
+                Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} stopped waiting for {Hyperlink.To(other)}, which isn't getting any closer; carrying on.");
+            }
+            else if (tired && !passed)
                 Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} waited half an hour for {(other != null ? Hyperlink.To(other) : "a train")}, which hasn't come; carrying on.");
             plan.MeetWith = "";
             plan.MeetSiding = "";
@@ -787,7 +1153,7 @@ namespace Conductor
 
         private static void GoFuel(BaseLocomotive loco, Plan plan, CarLoadTargetLoader loader)
         {
-            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} heading for {Fuel.Describe(loader.load.id).ToLowerInvariant()} near {Wyes.NearestStop(Fuel.Point(loader))?.DisplayName}: {Fuel.Describe(loader.load.id)} at {Fuel.Level(loco, loader.load.id):P0}, refuel below {plan.RefuelBelow}%.");
+            Journal.Info($"Conductor: {loco.DisplayName} heading for {Fuel.Describe(loader.load.id).ToLowerInvariant()} near {Wyes.NearestStop(Fuel.Point(loader))?.DisplayName}: {Fuel.Describe(loader.load.id)} at {Fuel.Level(loco, loader.load.id):P0}, refuel below {plan.RefuelBelow}%.");
             plan.Loader = loader.keyValueObject.RegisteredId;
             plan.Tries = 0;
             plan.Phase = Phase.ToFuel;
@@ -831,7 +1197,7 @@ namespace Conductor
                 plan.Since = TimeWeather.Now.TotalSeconds;
                 _filling.Remove(loco.id);
                 plan.Status = $"Taking {what}";
-                ModEntry.Log?.Info($"Conductor: {loco.DisplayName} taking {what}, starting at {Fuel.Level(loco, loader.load.id):P0}.");
+                Journal.Info($"Conductor: {loco.DisplayName} taking {what}, starting at {Fuel.Level(loco, loader.load.id):P0}.");
                 return;
             }
             // A pull-up that missed teaches the next one. Backing clear of the spout counts as a
@@ -867,7 +1233,7 @@ namespace Conductor
             Fuel.SetLoading(loader, false);
             _filling.Remove(loco.id);
             double took = now - plan.Since;
-            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} done taking {what} at {level:P0} after {took / 60:0.0} game minutes{(stalled && level < 0.995f ? ", as it stopped filling" : "")}.");
+            Journal.Info($"Conductor: {loco.DisplayName} done taking {what} at {level:P0} after {took / 60:0.0} game minutes{(stalled && level < 0.995f ? ", as it stopped filling" : "")}.");
             if (stalled && level < 0.995f)
                 Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} stopped taking {what} at {level:P0}; the stop may be empty.");
             CarLoadTargetLoader more = FuelNeeded(loco, plan, loader);
@@ -889,9 +1255,11 @@ namespace Conductor
             Station here = route.FirstOrDefault(st => AtStation(loco, st.Stop));
             if (here != null)
             {
-                ModEntry.Log?.Info($"Conductor: {loco.DisplayName} back on at {here.Name}: stopping there (was heading for {plan.Station}).");
+                Journal.Info($"Conductor: {loco.DisplayName} back on at {here.Name}: stopping there (was heading for {plan.Station}).");
                 return here.Stop;
             }
+            if (plan.Timetable)
+                return StationStop(plan) ?? route[0].Stop;
             Graph graph = Graph.Shared;
             Vector3 front = graph.GetPosition(loco.LocationF), back = graph.GetPosition(loco.LocationR);
             int best = -1;
@@ -915,7 +1283,7 @@ namespace Conductor
                 plan.Direction = Vector3.Dot(heading, to - from) >= 0f ? 1 : -1;
             }
             PassengerStop next = route[plan.Direction > 0 ? best + 1 : best].Stop;
-            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} back on between {route[best].Name} and {route[best + 1].Name}, "
+            Journal.Info($"Conductor: {loco.DisplayName} back on between {route[best].Name} and {route[best + 1].Name}, "
                 + $"going {(plan.Direction > 0 ? "toward " + route[route.Count - 1].Name : "toward " + route[0].Name)}: heading for {next.DisplayName} (was {plan.Station}).");
             return next;
         }
@@ -1086,6 +1454,14 @@ namespace Conductor
                 marker.AutoDestinationsFromTimetable = false;
                 coach.SetPassengerMarker(marker);
             }
+        }
+
+        // Seats in a coach: its passenger capacity, as the station boards it.
+        private static int Seats(Car coach)
+        {
+            Load passengers = CarLoadLibrary.GetLoad("rr/passengers");
+            LoadSlot slot = coach.Definition.LoadSlots.FirstOrDefault(s => s.LoadRequirementsMatch(passengers));
+            return slot == null ? 0 : (int)slot.MaximumCapacity;
         }
 
         private static bool Full(Car coach)

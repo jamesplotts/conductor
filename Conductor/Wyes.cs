@@ -175,7 +175,7 @@ namespace Conductor
             }
             result = kept;
             foreach (Wye wye in result)
-                ModEntry.Log?.Info($"Conductor: wye near {wye.Name}: main switches {wye.MainA.id} and {wye.MainB.id}, tail switch {wye.Tail.id}; tail holds {wye.TailRoom:0} m of train.");
+                Journal.Info($"Conductor: wye near {wye.Name}: main switches {wye.MainA.id} and {wye.MainB.id}, tail switch {wye.Tail.id}; tail holds {wye.TailRoom:0} m of train.");
             return result;
         }
 

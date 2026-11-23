@@ -75,11 +75,11 @@ namespace Conductor
                 var shop = shops.OrderByDescending(s => s.serves).ThenBy(s => s.d).First();
                 where = "at " + shop.industry.DisplayName;
                 if (shop.serves < train.Count)
-                    ModEntry.Log?.Info($"Conductor: {loco.DisplayName}: the repair track at {shop.industry.DisplayName} works on {shop.serves} of its {train.Count} cars.");
+                    Journal.Info($"Conductor: {loco.DisplayName}: the repair track at {shop.industry.DisplayName} works on {shop.serves} of its {train.Count} cars.");
                 return Platforms.FarEndFor(shop.span, loco);
             }
             if (worn)
-                ModEntry.Log?.Info($"Conductor: {loco.DisplayName} has cars needing repair but no open repair track nearby holds the whole train.");
+                Journal.Info($"Conductor: {loco.DisplayName} has cars needing repair but no open repair track nearby holds the whole train.");
 
             Loop siding = Turns.LoopsNear(graph, at, Search)
                 .Where(l => l.Room >= length && !Occupied(graph, l, train))

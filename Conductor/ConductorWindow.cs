@@ -94,10 +94,11 @@ namespace Conductor
                             Runner.End(loco, "Stopped.");
                             builder.Rebuild();
                         });
-                        strip.AddButton("Turn Back", () => Runner.Reverse(loco));
+                        if (!new Plan(loco).Timetable)
+                            strip.AddButton("Turn Back", () => Runner.Reverse(loco));
                     }
                 });
-                if (!plan.Running)
+                if (!plan.Running && !plan.Timetable)
                 {
                     List<Station> line = Runner.Route(plan);
                     if (line.Count >= 2)
@@ -117,14 +118,24 @@ namespace Conductor
                     p.SpeedMph = mph;
                 }));
 
+                scroll.AddSection(Heading("Timetable"), section => TimetableSection(section, builder, loco, canWrite, plan.Running));
                 scroll.AddSection(Heading("Stations"), section => Stations(section, loco, canWrite));
                 scroll.AddSection(Heading("Fuel Stops"), section => FuelStops(section, loco, canWrite));
                 scroll.AddSection(Heading("Overnight"), section => Overnight(section, loco, canWrite));
                 scroll.AddSection(Heading("Turn Around"), section => Turning(section, loco, canWrite));
             });
+            if (plan.Enabled || plan.Running)
+            {
+                // Conductor's messages for this engine, newest at the top.
+                builder.Spacer(4f);
+                builder.AddLabel("<b>Log</b>");
+                builder.VScrollView(log => log.AddLabel(() => "<size=85%>" + Journal.For(loco.DisplayName) + "</size>", UIPanelBuilder.Frequency.Periodic))
+                    .Height(170f);
+            }
             // Running state comes from the runner; show the buttons that fit.
             builder.RebuildOnPropertyChange(new Helpers.KeyValueProperties(loco.KeyValueObject, "conductor"), "running");
             builder.RebuildOnPropertyChange(new Helpers.KeyValueProperties(loco.KeyValueObject, "conductor"), "enabled");
+            builder.RebuildOnPropertyChange(new Helpers.KeyValueProperties(loco.KeyValueObject, "conductor"), "tt");
         }
 
         private static void Stations(UIPanelBuilder section, BaseLocomotive loco, bool canWrite)
@@ -146,6 +157,9 @@ namespace Conductor
                 var p = new Plan(loco);
                 p.MeetTrains = on;
             }, canWrite);
+            bool timetable = new Plan(loco).Timetable;
+            if (timetable)
+                section.AddLabel("<size=85%>Timetable Mode is on: the stations come from the timetable trains, so the ticks below aren't used.</size>");
             HashSet<string> picked = new Plan(loco).Stops;
             List<string> open = stations.Where(s => s.Closed == null && picked.Contains(s.Id)).Select(s => s.Id).ToList();
             foreach (Station station in stations)
@@ -155,7 +169,7 @@ namespace Conductor
                 if (open.Count >= 2 && (s.Id == open.First() || s.Id == open.Last()))
                     name += "  <color=#E0A040>end</color>";
                 // Stations not bought or built to yet aren't shown; they appear once they open.
-                if (s.Closed != null)
+                if (s.Closed != null || timetable)
                     continue;
                 section.AddFieldToggle(name, () => new Plan(loco).Stops.Contains(s.Id), on =>
                 {
@@ -167,6 +181,87 @@ namespace Conductor
                         stops.Remove(s.Id);
                     p.Stops = stops;
                     section.Rebuild();
+                }, canWrite);
+            }
+
+            var plan = new Plan(loco);
+            section.AddField("Shortest Stop", section.AddDropdownIntPicker(new List<int> { 30, 60, 120, 180, 300, 600 }, plan.MinStopSeconds,
+                sec => sec < 60 ? $"{sec} seconds" : sec == 60 ? "1 minute" : $"{sec / 60} minutes", canWrite, sec =>
+                {
+                    var p = new Plan(loco);
+                    p.MinStopSeconds = sec;
+                }));
+            section.AddLabel("<size=85%>The train stays at least this long at every stop, even when nobody is getting on or off. Give it longer if another mod loads baggage or mail at stations.</size>");
+
+            // Wait to fill up, per station.
+            List<Station> route = Runner.Route(plan);
+            if (plan.Timetable)
+            {
+                HashSet<string> ticked = plan.TimetableTrains;
+                var ids = new HashSet<string>(Timetables.PassengerTrains().Where(t => ticked.Contains(t.Name)).SelectMany(Timetables.Stations).Select(st => st.Id));
+                route = stations.Where(st => st.Closed == null && ids.Contains(st.Id)).ToList();
+            }
+            if (route.Count < 2)
+                return;
+            section.AddLabel("<size=85%><b>Wait to Fill Up</b>: at these stations the train doesn't leave until the coaches are this full, or until it has waited as long as Wait No Longer Than.</size>");
+            Dictionary<string, int> holds = plan.HoldPercent;
+            foreach (Station station in route)
+            {
+                Station s = station;
+                section.AddField("    " + s.Name, section.AddDropdownIntPicker(new List<int> { 0, 25, 50, 75, 90, 100 }, holds.TryGetValue(s.Id, out int pct) ? pct : 0,
+                    v => v == 0 ? "Don't wait" : $"{v}% full", canWrite, v =>
+                    {
+                        var p = new Plan(loco);
+                        Dictionary<string, int> h = p.HoldPercent;
+                        h[s.Id] = v;
+                        p.HoldPercent = h;
+                    }));
+            }
+            section.AddField("Wait No Longer Than", section.AddDropdownIntPicker(new List<int> { 15, 30, 60, 90, 120, 180 }, plan.HoldMaxMinutes,
+                m => m < 60 ? $"{m} minutes" : m == 60 ? "1 hour" : m % 60 == 0 ? $"{m / 60} hours" : $"{m / 60.0:0.#} hours", canWrite, m =>
+                {
+                    var p = new Plan(loco);
+                    p.HoldMaxMinutes = m;
+                }));
+        }
+
+        private static void TimetableSection(UIPanelBuilder section, UIPanelBuilder window, BaseLocomotive loco, bool canWrite, bool running)
+        {
+            section.AddFieldToggle("Timetable Mode", () => new Plan(loco).Timetable, on =>
+            {
+                var p = new Plan(loco);
+                if (p.Running)
+                    Runner.End(loco, "Stopped: Timetable Mode changed. Press Start to carry on.");
+                p.Timetable = on;
+                window.Rebuild(); // Stations, Turn Around and the buttons change too
+            }, canWrite);
+            var plan = new Plan(loco);
+            if (!plan.Timetable)
+            {
+                section.AddLabel("<size=85%>Off: the train runs back and forth between the ticked stations. On: it runs the game's timetable trains you tick here, keeping to their times.</size>");
+                return;
+            }
+            List<Model.Ops.Timetable.Timetable.Train> trains = Timetables.PassengerTrains();
+            if (trains.Count == 0)
+            {
+                section.AddLabel("<color=#E0A040>The game's timetable has no passenger trains. Turn the timetable on (Preferences) and add some in the Timetable window.</color>");
+                return;
+            }
+            section.AddLabel("<size=85%>Tick the trains this engine runs. It calls at each train's stations in order and doesn't leave a station before the train's time there. At the end of one train it goes out as the next ticked train that leaves from there, turning on the wye first if it needs to. With Lay Up Overnight on, a wait of more than 90 minutes is spent parked, back at the platform 30 minutes before the train is due.</size>");
+            if (running && plan.TimetableTrain.Length > 0)
+                section.AddField("Running As", () => { var t = Timetables.Find(new Plan(loco).TimetableTrain); return t != null ? Timetables.Describe(t) : new Plan(loco).TimetableTrain; }, UIPanelBuilder.Frequency.Periodic);
+            foreach (Model.Ops.Timetable.Timetable.Train train in trains)
+            {
+                string symbol = train.Name;
+                section.AddFieldToggle(Timetables.Describe(train), () => new Plan(loco).TimetableTrains.Contains(symbol), on =>
+                {
+                    var p = new Plan(loco);
+                    HashSet<string> set = p.TimetableTrains;
+                    if (on)
+                        set.Add(symbol);
+                    else
+                        set.Remove(symbol);
+                    p.TimetableTrains = set;
                 }, canWrite);
             }
         }
@@ -253,6 +348,11 @@ namespace Conductor
                 var p = new Plan(loco);
                 p.TurnOnWyes = on;
             }, canWrite);
+            section.AddField("Turn Speed", section.AddDropdownIntPicker(new List<int> { 10, 15, 20 }, new Plan(loco).TurnSpeedMph, mph => $"{mph} mph", canWrite, mph =>
+            {
+                var p = new Plan(loco);
+                p.TurnSpeedMph = mph;
+            }));
             section.AddLabel("<size=85%>At each end of the line, if the engine would be at the back for the trip home, the train turns on the station's wye: into one leg, all the way into the tail, and out the other leg. A train too long for the tail stands in a passing siding while the engine turns alone and runs around it. An observation car on the rear goes through the wye with the engine and is set back on the rear, platform outward.</size>");
             if (Wyes.All().Count == 0)
                 section.AddLabel("<size=85%>No wyes found on open track yet.</size>");

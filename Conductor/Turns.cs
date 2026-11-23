@@ -60,6 +60,8 @@ namespace Conductor
         private const float LoopSearch = 2500f;
 
         public static string Go(Location where, string note) => "go" + Sep + Graph.LocationToString(where) + Sep + note;
+        // A waypoint the train runs through without stopping (it only picks the route).
+        public static string Via(Location where, string note) => "via" + Sep + Graph.LocationToString(where) + Sep + note;
         private static string Couple(Location where, Car car, string note) => "couple" + Sep + Graph.LocationToString(where) + Sep + car.id + Sep + note;
         private static string Cut(Car car, bool fromLoco, string note) => "cut" + Sep + car.id + Sep + (fromLoco ? "loco" : "train") + Sep + note;
 
@@ -79,9 +81,9 @@ namespace Conductor
             return new List<string>
             {
                 Go(leaveByA ? outB : outA, $"Turning {what} on the wye at {wye.Name}"),
-                Go(leaveByA ? legB : legA, $"Turning {what}: into the wye"),
+                Via(leaveByA ? legB : legA, $"Turning {what}: into the wye"),
                 Go(inTail, $"Turning {what}: into the wye's tail"),
-                Go(leaveByA ? legA : legB, $"Turning {what}: back out of the tail"),
+                Via(leaveByA ? legA : legB, $"Turning {what}: back out of the tail"),
                 Go(leaveByA ? outA : outB, $"Turning {what}: out onto the main"),
             };
         }
@@ -222,7 +224,7 @@ namespace Conductor
         private static IEnumerable<string> RunAround(Graph graph, Loop loop, Side from, Side to, float length, string what)
         {
             yield return Go(from.Beyond(graph, length), "Turning: " + what);
-            yield return Go(loop.AroundMiddle(graph), "Turning: " + what);
+            yield return Via(loop.AroundMiddle(graph), "Turning: " + what);
             yield return Go(to.Beyond(graph, length), "Turning: " + what);
         }
 

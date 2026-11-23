@@ -1,5 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
+using HarmonyLib;
+using Helpers;
 using Model;
 using Model.AI;
 using Model.Ops;
@@ -32,11 +34,76 @@ namespace Conductor
                 if (sidings.Count > 0 && spans.Any(s => s != sidings[0].span && (Siding(graph, s)?.Score ?? 0) < sidings[0].siding.Score))
                 {
                     LastWasSiding = true;
-                    return InSiding(graph, sidings[0].span, sidings[0].siding, train, length, Overshoot(graph, train, sidings[0].span.GetCenterPoint()));
+                    return InSiding(graph, stop, sidings[0].span, sidings[0].siding, train, length, Overshoot(graph, train, sidings[0].span.GetCenterPoint()));
                 }
             }
             TrackSpan longest = spans.OrderByDescending(s => s.Length).First();
-            return FarEnd(graph, longest, Trailing(graph, train, longest.GetCenterPoint()), Overshoot(graph, train, longest.GetCenterPoint()));
+            return Alongside(graph, stop, longest, Trailing(graph, train, longest.GetCenterPoint()), length, Overshoot(graph, train, longest.GetCenterPoint()));
+        }
+
+        // Where to stop so the coaches sit alongside the station building: centered on it where the
+        // platform track allows, otherwise as near as the platform's ends let them. Falls back to the
+        // far end of the platform when the building isn't loaded (it's only there near the camera's tiles).
+        private static Location Alongside(Graph graph, PassengerStop stop, TrackSpan span, Vector3 trailing, float length, float overshoot)
+        {
+            Location farEnd = FarEnd(graph, span, trailing, overshoot);
+            Vector3? depot = Depot(stop);
+            if (!depot.HasValue)
+                return farEnd;
+            Location lower = span.lower.Value, upper = span.upper.Value;
+            bool upperFar = Fuel.Flat(graph.GetPosition(upper), trailing) >= Fuel.Flat(graph.GetPosition(lower), trailing);
+            Location far = upperFar ? upper : lower, near = upperFar ? lower : upper;
+            Location from = graph.LocationOrientedToward(near, far);
+            HashSet<TrackSegment> onSpan = new HashSet<TrackSegment>(span.GetSegments());
+            float total = span.Length, best = -1f, bestGap = float.MaxValue;
+            for (float d = 0f; d <= total; d += 2f)
+            {
+                Location at = graph.LocationByMoving(from, d, false, true);
+                if (!onSpan.Contains(at.segment))
+                    break;
+                float gap = Fuel.Flat(graph.GetPosition(at), depot.Value);
+                if (gap < bestGap)
+                {
+                    bestGap = gap;
+                    best = d;
+                }
+            }
+            if (best < 0f || bestGap > 150f)
+                return farEnd;
+            float coaches = Mathf.Max(0f, length - overshoot);
+            float inset = Mathf.Min(5f, total / 4f);
+            float farMost = total - inset + overshoot;
+            // The engine end goes this far along: the coaches' middle at the building, but the whole
+            // train on the platform track where it fits, and never past the far end.
+            float target = Mathf.Max(best + coaches / 2f + overshoot, Mathf.Min(inset + coaches + overshoot, farMost));
+            if (target >= farMost)
+                return farEnd;
+            Location spot = graph.LocationByMoving(from, target, false, true);
+            return onSpan.Contains(spot.segment) || target > total ? spot : farEnd;
+        }
+
+        private static readonly AccessTools.FieldRef<StationAgent, PassengerStop> AgentStop =
+            AccessTools.FieldRefAccess<StationAgent, PassengerStop>("_passengerStop");
+
+        private static readonly Dictionary<string, StationAgent> Agents = new Dictionary<string, StationAgent>();
+        private static float _agentsAt = -999f;
+
+        // The station building (its agent), in game coordinates, when it's loaded.
+        private static Vector3? Depot(PassengerStop stop)
+        {
+            if ((!Agents.TryGetValue(stop.identifier, out StationAgent agent) || agent == null) && Time.realtimeSinceStartup - _agentsAt > 5f)
+            {
+                _agentsAt = Time.realtimeSinceStartup;
+                Agents.Clear();
+                foreach (StationAgent a in Object.FindObjectsOfType<StationAgent>())
+                {
+                    PassengerStop s = AgentStop(a);
+                    if (s != null)
+                        Agents[s.identifier] = a;
+                }
+                Agents.TryGetValue(stop.identifier, out agent);
+            }
+            return agent != null ? WorldTransformer.WorldToGame(agent.transform.position) : (Vector3?)null;
         }
 
         // A platform track between two switches.
@@ -81,19 +148,24 @@ namespace Conductor
         }
 
         // In a siding: at the far end of the platform when the whole train then fits clear of the
-        // near switch, otherwise up to the far switch's clearance point.
-        private static Location InSiding(Graph graph, TrackSpan span, SidingInfo siding, List<Car> train, float length, float overshoot)
+        // near switch, otherwise just far enough on to clear it (never past the far switch's clearance point).
+        private static Location InSiding(Graph graph, PassengerStop stop, TrackSpan span, SidingInfo siding, List<Car> train, float length, float overshoot)
         {
             Vector3 trailing = Trailing(graph, train, span.GetCenterPoint());
             bool aIsFar = Fuel.Flat(siding.EndA.Position, trailing) >= Fuel.Flat(siding.EndB.Position, trailing);
             Location farClear = aIsFar ? Wyes.Along(graph, siding.EndA, siding.LastA, Wyes.Clearance) : Wyes.Along(graph, siding.EndB, siding.LastB, Wyes.Clearance);
             Location nearClear = aIsFar ? Wyes.Along(graph, siding.EndB, siding.LastB, Wyes.Clearance) : Wyes.Along(graph, siding.EndA, siding.LastA, Wyes.Clearance);
-            Location platformEnd = FarEnd(graph, span, trailing, overshoot);
+            Location platformEnd = Alongside(graph, stop, span, trailing, length, overshoot);
             Vector3 near = graph.GetPosition(nearClear);
             // Not past the far switch's clear point, however far the engine runs on.
             if (Fuel.Flat(near, graph.GetPosition(platformEnd)) > Fuel.Flat(near, graph.GetPosition(farClear)))
                 return farClear;
-            return Fuel.Flat(near, graph.GetPosition(platformEnd)) >= length ? platformEnd : farClear;
+            if (Fuel.Flat(near, graph.GetPosition(platformEnd)) >= length)
+                return platformEnd;
+            // Too long to stop at the platform's end clear of the near switch: pull up just far enough
+            // to clear it, which keeps as much of the train at the platform as can be (not on to the far switch).
+            Location justClear = aIsFar ? Wyes.Along(graph, siding.EndB, siding.LastB, Wyes.Clearance + length + 2f) : Wyes.Along(graph, siding.EndA, siding.LastA, Wyes.Clearance + length + 2f);
+            return Fuel.Flat(near, graph.GetPosition(justClear)) < Fuel.Flat(near, graph.GetPosition(farClear)) ? justClear : farClear;
         }
 
         // Near the far end of a track span, seen from the train, so the whole train pulls in along it.

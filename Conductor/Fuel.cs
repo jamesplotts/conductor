@@ -73,7 +73,7 @@ namespace Conductor
             Overshoot[key] = Mathf.Clamp(before + past, -MaxOvershoot, MaxOvershoot);
             string what = Describe(loader.load.id).ToLowerInvariant();
             float aim = Overshoot[key];
-            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} stopped {Mathf.Abs(past):0.00} m {(past >= 0f ? "past" : "short of")} the {what} spout; next time it aims {Mathf.Abs(aim):0.00} m {(aim >= 0f ? "short" : "further")}.");
+            Journal.Info($"Conductor: {loco.DisplayName} stopped {Mathf.Abs(past):0.00} m {(past >= 0f ? "past" : "short of")} the {what} spout; next time it aims {Mathf.Abs(aim):0.00} m {(aim >= 0f ? "short" : "further")}.");
         }
 
         // Found again every half minute: loaders in an area come to life when the area opens.
@@ -218,7 +218,7 @@ namespace Conductor
             if (car == null || !TryFillerPoint(car, slot, Point(loader), out Vector3 filler, out float radius))
                 return false;
             float miss = Flat(filler, Point(loader));
-            ModEntry.Log?.Info($"Conductor: {loco.DisplayName} at {Describe(loader.load.id)}: filler {miss:0.00} m from the spout, needs {radius + loader.radius:0.00} m or less.");
+            Journal.Info($"Conductor: {loco.DisplayName} at {Describe(loader.load.id)}: filler {miss:0.00} m from the spout, needs {radius + loader.radius:0.00} m or less.");
             return miss <= radius + loader.radius;
         }
 

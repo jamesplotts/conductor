@@ -83,6 +83,37 @@ namespace Conductor
         // Refuel when coal, water or diesel falls below this, in percent.
         public int RefuelBelow { get => _p["refuelBelow"].IntValueOrDefault(35); set => _p["refuelBelow"] = Value.Int(value); }
         public int SpeedMph { get => _p["speed"].IntValueOrDefault(35); set => _p["speed"] = Value.Int(value); }
+        // Timetable mode: run the game's timetable trains ticked here, one after another.
+        public bool Timetable { get => _p["tt"].BoolValue; set => _p["tt"] = Value.Bool(value); }
+        public HashSet<string> TimetableTrains
+        {
+            get => new HashSet<string>(Split(_p["ttTrains"].StringValue, ','));
+            set => _p["ttTrains"] = Value.String(string.Join(",", value ?? new HashSet<string>()));
+        }
+        // The timetable train being run now, by symbol.
+        public string TimetableTrain { get => _p["ttCur"].StringValue ?? ""; set => _p["ttCur"] = Value.String(value ?? ""); }
+
+        // Through wyes and run-arounds, in mph (coupling stays at 10).
+        public int TurnSpeedMph { get => _p["turnSpeed"].IntValueOrDefault(15); set => _p["turnSpeed"] = Value.Int(value); }
+        // The least a station stop lasts, in game seconds (time for other mods' baggage and mail, say).
+        public int MinStopSeconds { get => _p["minStop"].IntValueOrDefault(30); set => _p["minStop"] = Value.Int(value); }
+
+        // Per station: don't leave until the coaches are this full, in percent (0: don't wait).
+        public Dictionary<string, int> HoldPercent
+        {
+            get
+            {
+                var d = new Dictionary<string, int>();
+                foreach (string[] kv in Split(_p["hold"].StringValue, ',').Select(e => e.Split(':')))
+                    if (kv.Length == 2 && int.TryParse(kv[1], out int pct) && pct > 0)
+                        d[kv[0]] = pct;
+                return d;
+            }
+            set => _p["hold"] = Value.String(string.Join(",", (value ?? new Dictionary<string, int>()).Where(kv => kv.Value > 0).Select(kv => kv.Key + ":" + kv.Value)));
+        }
+        public int HoldFor(string stationId) => HoldPercent.TryGetValue(stationId ?? "", out int pct) ? pct : 0;
+        // Waiting to fill up gives up after this long, in game minutes.
+        public int HoldMaxMinutes { get => _p["holdMax"].IntValueOrDefault(60); set => _p["holdMax"] = Value.Int(value); }
 
         // Which way a run started partway along the line goes first: +1 down the list of stations,
         // -1 up it, 0 the way the train is moving or the engine faces.
@@ -117,6 +148,10 @@ namespace Conductor
         // A turn: its steps in order (see Turns), and which one the train is on.
         public string[] TurnMoves { get => Split(_p["turnMoves"].StringValue, ';').ToArray(); set => _p["turnMoves"] = Value.String(string.Join(";", value ?? new string[0])); }
         public int TurnStep { get => _p["turnStep"].IntValueOrDefault(0); set => _p["turnStep"] = Value.Int(value); }
+        // A turn move held back until its way is clear (see Runner.StraightRoute).
+        public bool TurnHold { get => _p["turnHold"].BoolValue; set => _p["turnHold"] = Value.Bool(value); }
+        // When the move under way was last checked for a detour, in game seconds.
+        public double TurnChecked { get => _p["turnChecked"].FloatValue; set => _p["turnChecked"] = Value.Float((float)value); }
         // An end of the line had no wye: turn at the next station that has one.
         public bool TurnPending { get => _p["turnPending"].BoolValue; set => _p["turnPending"] = Value.Bool(value); }
         // Whether the train has already pulled into a passing siding to turn at this station.
