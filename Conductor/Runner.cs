@@ -366,6 +366,8 @@ namespace Conductor
                 Leave(loco, plan, Route(plan));
                 return;
             }
+            WaypointQueueGuard.Setup(Patcher.Harmony);
+            WaypointQueueGuard.Release(loco, plan);
             var ae = new AutoEngineerOrdersHelper(loco, new AutoEngineerPersistence(loco.KeyValueObject));
             // Someone took the controls: hand the train over.
             if (ae.Mode != AutoEngineerMode.Waypoint && plan.Phase != Phase.AtStation && plan.Phase != Phase.Fueling && !(plan.Phase == Phase.Layover && plan.ParkedUp))

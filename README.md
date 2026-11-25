@@ -31,12 +31,15 @@ Taking the Auto Engineer off waypoints stops Conductor for that train.
 
 ## Good to know
 
-- Don't run another mod that drives the same engine (Passenger Helper, say) at the same time. Waypoint Queue can stay installed: it only acts on engines you give its own waypoints to. Don't queue Waypoint Queue orders for an engine Conductor is running, though: Conductor sees its waypoint change and hands the train over to you. While Conductor is running an engine, the Choose Waypoint button in its engine controls is greyed out and the waypoint key does nothing; untick Enabled or press Stop to pick a waypoint yourself.
+- Don't run another mod that drives the same engine (Passenger Helper, say) at the same time. Waypoint Queue can stay installed. While Conductor is running an engine, Waypoint Queue can't add waypoints or apply a route to it (you get a message saying so), and any queue or looping route it already had for that engine is cleared, so it can't take the train over. Other engines are left to Waypoint Queue. While Conductor is running an engine, the Choose Waypoint button in its engine controls is greyed out and the waypoint key does nothing; untick Enabled or press Stop to pick a waypoint yourself.
 - The game's own Auto Engineer station stops (the AI passenger stop setting) are switched off for engines Conductor is running, since Conductor makes the stops itself; the game's version stops short of the platform when the train is backing up. Other engines are unaffected.
 - The Auto Engineer throws switches itself on the way, unless a car is standing on one or it is under dispatcher (CTC) control.
 - Settings and runs are saved with the game. In multiplayer, the host runs the trains; everyone sees the window.
 
 ## Changelog
+
+### 0.2.1 (2026-11-24)
+- Waypoint Queue can no longer take over a Conductor train: while Conductor is running an engine, Waypoint Queue can't add waypoints or apply a route to it, and any queue or looping route it already had for the engine is cleared.
 
 ### 0.2.0 (2026-11-23)
 - **Timetable Mode:** runs the game's own timetable, train by train, instead of shuttling between the ends of the line.

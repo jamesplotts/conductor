@@ -6,6 +6,7 @@ namespace Conductor
     internal static class Patcher
     {
         private static Harmony _harmony;
+        public static Harmony Harmony => _harmony;
 
         public static void Patch(string id)
         {
