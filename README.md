@@ -38,6 +38,9 @@ Taking the Auto Engineer off waypoints stops Conductor for that train.
 
 ## Changelog
 
+### 0.2.2 (2026-11-24)
+- The Conductor status on an engine's Car tab is on its own line under the Conductor button, so a long status no longer runs over the button.
+
 ### 0.2.1 (2026-11-24)
 - Waypoint Queue can no longer take over a Conductor train: while Conductor is running an engine, Waypoint Queue can't add waypoints or apply a route to it, and any queue or looping route it already had for the engine is cleared.
 

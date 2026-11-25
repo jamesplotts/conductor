@@ -14,18 +14,20 @@ namespace Conductor
             if (!(____car is BaseLocomotive loco) || loco.CarType.IsTender)
                 return;
             builder.Spacer(6f);
+            // The button on its own row and the status on the line below: a long status beside the
+            // button squeezed it until the label ran over it.
             builder.HStack(row =>
             {
                 row.AddButtonCompact("Conductor", () => ConductorWindow.Show(loco));
-                row.Spacer(8f);
-                row.AddLabel(() =>
-                {
-                    var plan = new Plan(loco);
-                    if (!plan.Running)
-                        return plan.Enabled ? "" : "<color=#888888>off</color>";
-                    return plan.Enabled ? plan.Status : "<color=#E0A040>Conductor disabled</color>";
-                }, UIPanelBuilder.Frequency.Periodic);
+                row.Spacer();
             });
+            builder.AddLabel(() =>
+            {
+                var plan = new Plan(loco);
+                if (!plan.Running)
+                    return plan.Enabled ? "" : "<color=#888888>Conductor off</color>";
+                return plan.Enabled ? plan.Status : "<color=#E0A040>Conductor disabled</color>";
+            }, UIPanelBuilder.Frequency.Periodic);
         }
     }
 }
