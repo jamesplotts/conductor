@@ -163,16 +163,18 @@ namespace Conductor
             Vector3 at = Graph.Shared.GetPosition(loco.LocationF);
             Station nearest = trains.SelectMany(Timetables.Stations).Where(st => st.Closed == null)
                 .OrderBy(st => Fuel.Flat(at, Graph.Shared.GetPosition(Platform(st.Stop, loco).GetValueOrDefault(loco.LocationF)))).FirstOrDefault();
-            TT.Train train = nearest != null ? Timetables.NextFrom(plan, nearest.Id) : null;
+            double from = TimeWeather.Now.TotalSeconds - Timetables.StartLate;
+            TT.Train train = nearest != null ? Timetables.NextFrom(plan, nearest.Id, from) : null;
             string startId = nearest?.Id;
             if (train == null)
             {
-                train = Timetables.Soonest(plan);
+                train = Timetables.Soonest(plan, from);
                 startId = train != null ? Timetables.Stations(train).FirstOrDefault()?.Id : null;
             }
             if (train == null || startId == null)
                 return "None of the ticked timetable trains can be run from here.";
             plan.TimetableTrain = train.Name;
+            plan.TimetableFrom = from;
             List<Station> route = Route(plan);
             if (route.Count < 2)
                 return $"Train {train.DisplayStringShort} doesn't call at two open stations.";
@@ -188,7 +190,7 @@ namespace Conductor
                 Arrive(loco, plan, start.Stop);
             else
                 Head(loco, plan, start.Stop);
-            double? due = Timetables.Departure(train, start.Id);
+            double? due = Timetables.Departure(plan, start.Id);
             Journal.Info($"Conductor: {loco.DisplayName} running timetable train {train.DisplayStringShort} from {start.Name}.");
             Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} is running timetable train {train.DisplayStringShort} from {start.Name}{(due.HasValue ? ", due away at " + Timetables.Clock(due.Value) : "")}.");
             return null;
@@ -504,29 +506,40 @@ namespace Conductor
             int i = route.FindIndex(s => s.Id == stop.identifier);
             if (i < 0 || i == route.Count - 1)
             {
-                TT.Train next = Timetables.NextFrom(plan, stop.identifier, plan.TimetableTrain);
+                double after = NextAfter(plan, stop.identifier);
+                TT.Train next = Timetables.NextFrom(plan, stop.identifier, after, plan.TimetableTrain);
                 if (next != null)
                 {
                     string done = plan.TimetableTrain;
                     plan.TimetableTrain = next.Name;
+                    plan.TimetableFrom = after;
                     route = Route(plan);
                     i = route.FindIndex(s => s.Id == stop.identifier);
-                    double? due = Timetables.Departure(next, stop.identifier);
+                    double? due = Timetables.Departure(plan, stop.identifier);
                     Journal.Info($"Conductor: {loco.DisplayName} done as train {done}; next is {next.DisplayStringShort} from {stop.DisplayName}.");
                     Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} goes out as train {next.DisplayStringShort}{(due.HasValue ? ", due away from " + stop.DisplayName + " at " + Timetables.Clock(due.Value) : "")}.");
                 }
             }
             bool more = i >= 0 && i < route.Count - 1;
-            double? dep = more ? Timetables.Departure(Timetables.Find(plan.TimetableTrain), stop.identifier) : null;
+            double? dep = more ? Timetables.Departure(plan, stop.identifier) : null;
             plan.LayingUp = plan.LayUp && i == 0 && dep.HasValue && dep.Value - TimeWeather.Now.TotalSeconds > TimetableLayUpGap;
             SetDestinations(loco, plan.LayingUp || !more ? new List<string>() : route.Skip(i + 1).Select(s => s.Id).ToList());
             plan.Status = $"At {stop.DisplayName}";
         }
 
+        // At the end of a timetable train's run, the next train must be due away no earlier than this
+        // one was due in, so a train already run today isn't taken up again.
+        private static double NextAfter(Plan plan, string stopId)
+        {
+            double now = TimeWeather.Now.TotalSeconds;
+            double? due = Timetables.ArrivalNear(Timetables.Find(plan.TimetableTrain), stopId);
+            return due.HasValue ? Math.Min(due.Value, now) : now - Timetables.StartLate;
+        }
+
         // Timetable mode, laid up: until TimetableComeBack before the train is due away.
         private static bool TimetableLaidUp(Plan plan, out string until)
         {
-            double? dep = Timetables.Departure(Timetables.Find(plan.TimetableTrain), plan.Station);
+            double? dep = Timetables.Departure(plan, plan.Station);
             until = dep.HasValue ? Timetables.Clock(dep.Value - TimetableComeBack) : "the next train";
             return dep.HasValue && TimeWeather.Now.TotalSeconds < dep.Value - TimetableComeBack;
         }
@@ -583,7 +596,7 @@ namespace Conductor
                     // The end of this train's run and no ticked train goes on from here (yet).
                     if (getting > 0)
                         return;
-                    if (Timetables.NextFrom(plan, stop.identifier, plan.TimetableTrain) != null)
+                    if (Timetables.NextFrom(plan, stop.identifier, NextAfter(plan, stop.identifier), plan.TimetableTrain) != null)
                     {
                         Arrive(loco, plan, stop);
                         return;
@@ -591,7 +604,7 @@ namespace Conductor
                     plan.Status = $"At {stop.DisplayName}: train {plan.TimetableTrain} done; no ticked timetable train leaves from here";
                     return;
                 }
-                double? dep = Timetables.Departure(Timetables.Find(plan.TimetableTrain), stop.identifier);
+                double? dep = Timetables.Departure(plan, stop.identifier);
                 if (dep.HasValue && TimeWeather.Now.TotalSeconds < dep.Value)
                 {
                     if (getting == 0 && !(waiting > 0 && !full) && !holding)

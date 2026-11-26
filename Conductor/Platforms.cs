@@ -37,7 +37,10 @@ namespace Conductor
                     return InSiding(graph, stop, sidings[0].span, sidings[0].siding, train, length, Overshoot(graph, train, sidings[0].span.GetCenterPoint()));
                 }
             }
-            TrackSpan longest = spans.OrderByDescending(s => s.Length).First();
+            // Otherwise the main line: of the platform tracks, the least siding-like (a siding is reached
+            // by the diverging route), the longest of those. With one platform track, that one.
+            TrackSpan longest = spans.Count == 1 ? spans[0]
+                : spans.OrderBy(s => Siding(graph, s)?.Score ?? 0).ThenByDescending(s => s.Length).First();
             return Alongside(graph, stop, longest, Trailing(graph, train, longest.GetCenterPoint()), length, Overshoot(graph, train, longest.GetCenterPoint()));
         }
 
@@ -72,7 +75,7 @@ namespace Conductor
                 return farEnd;
             float coaches = Mathf.Max(0f, length - overshoot);
             float inset = Mathf.Min(5f, total / 4f);
-            float farMost = total - inset + overshoot;
+            float farMost = total - inset + Mathf.Min(overshoot, RoomPast(graph, far, near, overshoot));
             // The engine end goes this far along: the coaches' middle at the building, but the whole
             // train on the platform track where it fits, and never past the far end.
             float target = Mathf.Max(best + coaches / 2f + overshoot, Mathf.Min(inset + coaches + overshoot, farMost));
@@ -183,8 +186,36 @@ namespace Conductor
             bool upperFar = Fuel.Flat(graph.GetPosition(upper), trailing) >= Fuel.Flat(graph.GetPosition(lower), trailing);
             Location far = upperFar ? upper : lower, near = upperFar ? lower : upper;
             float inset = Mathf.Min(5f, span.Length / 4f);
+            overshoot = Mathf.Min(overshoot, RoomPast(graph, far, near, overshoot));
             // Short of the end of the track (a terminus's bumper), which the Auto Engineer won't go past anyway.
             return graph.LocationByMoving(graph.LocationOrientedToward(far, near), inset - overshoot, false, true);
+        }
+
+        // How far the engine can run on past the far end of a platform track, up to `max`: not over a
+        // switch beyond it (it would go wherever the switch is set, into a spur say), stopping clear of it.
+        private static float RoomPast(Graph graph, Location far, Location near, float max)
+        {
+            if (max <= 0f)
+                return 0f;
+            Location start = graph.LocationOrientedToward(far, near).Flipped();
+            TrackSegment last = start.segment;
+            Vector3 prev = graph.GetPosition(start);
+            for (float d = 2f; d <= max + Wyes.Clearance; d += 2f)
+            {
+                Location at = graph.LocationByMoving(start, d, false, true);
+                Vector3 pos = graph.GetPosition(at);
+                if ((pos - prev).sqrMagnitude < 0.01f)
+                    return Mathf.Min(max, d);
+                prev = pos;
+                if (at.segment != last)
+                {
+                    TrackNode node = last.a == at.segment.a || last.a == at.segment.b ? last.a : last.b;
+                    if (graph.IsSwitch(node))
+                        return Mathf.Clamp(d - 2f - Wyes.Clearance, 0f, max);
+                    last = at.segment;
+                }
+            }
+            return max;
         }
 
         // How far the cars ahead of the first coach reach: the engine and tender when the engine leads,

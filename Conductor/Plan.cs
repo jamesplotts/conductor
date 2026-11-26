@@ -92,6 +92,9 @@ namespace Conductor
         }
         // The timetable train being run now, by symbol.
         public string TimetableTrain { get => _p["ttCur"].StringValue ?? ""; set => _p["ttCur"] = Value.String(value ?? ""); }
+        // Game seconds the timetable train being run was taken up from: its times are the first ones
+        // at or after this, so a train run earlier today isn't taken for one still to come.
+        public double TimetableFrom { get => _p["ttFrom"].IntValueOrDefault(0); set => _p["ttFrom"] = Value.Int((int)value); }
 
         // Through wyes and run-arounds, in mph (coupling stays at 10).
         public int TurnSpeedMph { get => _p["turnSpeed"].IntValueOrDefault(15); set => _p["turnSpeed"] = Value.Int(value); }

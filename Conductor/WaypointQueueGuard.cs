@@ -50,7 +50,17 @@ namespace Conductor
                 _assignments = AccessTools.Property(manager, "RouteAssignments");
                 _removeState = AccessTools.Method(manager, "RemoveLocoWaypointState", new[] { typeof(string) });
                 _removeAssignment = AccessTools.Method(manager, "RemoveRouteAssignment", new[] { typeof(string) });
-                Journal.Info($"Conductor: Waypoint Queue found; it can't give orders to engines Conductor is driving ({patched} of 3 hooks).");
+                // Waypoint Queue cancels an engine's current waypoint whenever it drops that engine's
+                // queue, which it does on its own once a queue is empty (an open Waypoint Queue window
+                // can leave one behind). For an engine Conductor is driving, that waypoint is Conductor's.
+                Type service = AccessTools.TypeByName("WaypointQueue.Services.AutoEngineerService");
+                MethodInfo cancel = service != null ? AccessTools.Method(service, "CancelActiveOrders") : null;
+                if (cancel != null && cancel.GetParameters().Length == 1 && typeof(BaseLocomotive).IsAssignableFrom(cancel.GetParameters()[0].ParameterType))
+                {
+                    harmony.Patch(cancel, prefix: new HarmonyMethod(AccessTools.Method(typeof(WaypointQueueGuard), nameof(KeepOurs))));
+                    patched++;
+                }
+                Journal.Info($"Conductor: Waypoint Queue found; it can't give orders to engines Conductor is driving or cancel theirs ({patched} of 4 hooks).");
             }
             catch (Exception ex)
             {
@@ -63,9 +73,19 @@ namespace Conductor
             var loco = __args.Length > 0 ? __args[0] as BaseLocomotive : null;
             if (!Conducted.Is(loco))
                 return true;
-            Toast.Present($"Conductor is driving {loco.DisplayName}. Stop it in the Conductor window to give it Waypoint Queue orders.");
+            // Once in a while per engine: Waypoint Queue retries a looping route every tick.
+            float now = UnityEngine.Time.realtimeSinceStartup;
+            if (!_toasted.TryGetValue(loco.id, out float last) || now - last > 30f)
+            {
+                _toasted[loco.id] = now;
+                Toast.Present($"Conductor is driving {loco.DisplayName}. Stop it in the Conductor window to give it Waypoint Queue orders.");
+            }
             return false;
         }
+
+        private static readonly System.Collections.Generic.Dictionary<string, float> _toasted = new System.Collections.Generic.Dictionary<string, float>();
+
+        private static bool KeepOurs(object[] __args) => !Conducted.Is(__args.Length > 0 ? __args[0] as BaseLocomotive : null);
 
         // Clears any Waypoint Queue queue or route for an engine Conductor is driving, keeping
         // Conductor's own waypoint (clearing the queue makes Waypoint Queue cancel the current one).

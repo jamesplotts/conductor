@@ -84,9 +84,53 @@ namespace Conductor
 
         public static string Clock(double gameSeconds) => Layover.Clock((int)((long)(gameSeconds / 60.0) % (24 * 60)));
 
+        // How late a train can be, when Conductor is started, and still be taken up as today's.
+        public const double StartLate = 30 * 60;
+
+        // When the train is due away from a station at or after a moment (game seconds): its time
+        // there on that day, or on the next day it comes round. Null when it doesn't call there.
+        public static double? DepartureAfter(TT.Train train, string stopId, double after)
+        {
+            if (train == null)
+                return null;
+            int i = EntryIndex(train, stopId);
+            if (i < 0 || !train.TryGetAbsoluteTimeForEntry(i, TimetableTimeType.Departure, out int minutes))
+                return null;
+            double at = Math.Floor(after / 86400.0) * 86400.0 + minutes * 60.0;
+            while (at < after)
+                at += 86400.0;
+            return at;
+        }
+
+        // When the train was due in at a station, on the occurrence nearest now.
+        public static double? ArrivalNear(TT.Train train, string stopId)
+        {
+            if (train == null)
+                return null;
+            int i = EntryIndex(train, stopId);
+            if (i < 0)
+                return null;
+            if (!train.TryGetAbsoluteTimeForEntry(i, TimetableTimeType.Arrival, out int minutes) && !train.TryGetAbsoluteTimeForEntry(i, TimetableTimeType.Departure, out minutes))
+                return null;
+            double now = TimeWeather.Now.TotalSeconds;
+            double at = Math.Floor(now / 86400.0) * 86400.0 + minutes * 60.0;
+            if (at - now > 43200.0)
+                at -= 86400.0;
+            else if (now - at > 43200.0)
+                at += 86400.0;
+            return at;
+        }
+
+        // The train being run's time away from a station, counted from when it was taken up.
+        public static double? Departure(Plan plan, string stopId)
+        {
+            TT.Train train = Find(plan.TimetableTrain);
+            return plan.TimetableFrom > 0 ? DepartureAfter(train, stopId, plan.TimetableFrom) : Departure(train, stopId);
+        }
+
         // The ticked train to run next from a station: of those that call there (and go on from it),
-        // the one due away soonest. Prefers trains that start there.
-        public static TT.Train NextFrom(Plan plan, string stopId, string notThis = null)
+        // the one due away soonest at or after `after`, preferring one that starts there at the same time.
+        public static TT.Train NextFrom(Plan plan, string stopId, double after, string notThis = null)
         {
             HashSet<string> ticked = plan.TimetableTrains;
             var options = new List<(TT.Train train, double at, bool starts)>();
@@ -98,19 +142,19 @@ namespace Conductor
                 int i = stations.FindIndex(s => s.Id == stopId);
                 if (i < 0 || i == stations.Count - 1)
                     continue;
-                double? at = Departure(t, stopId);
+                double? at = DepartureAfter(t, stopId, after);
                 if (at.HasValue)
                     options.Add((t, at.Value, i == 0));
             }
-            return options.OrderByDescending(o => o.starts).ThenBy(o => o.at).Select(o => o.train).FirstOrDefault();
+            return options.OrderBy(o => o.at).ThenByDescending(o => o.starts).Select(o => o.train).FirstOrDefault();
         }
 
         // Ticked trains don't call here: the one due away soonest from its first station.
-        public static TT.Train Soonest(Plan plan)
+        public static TT.Train Soonest(Plan plan, double after)
         {
             HashSet<string> ticked = plan.TimetableTrains;
             return PassengerTrains().Where(t => ticked.Contains(t.Name))
-                .Select(t => (t, at: Stations(t).Count > 0 ? Departure(t, Stations(t)[0].Id) : null))
+                .Select(t => (t, at: Stations(t).Count > 0 ? DepartureAfter(t, Stations(t)[0].Id, after) : null))
                 .Where(x => x.at.HasValue).OrderBy(x => x.at.Value).Select(x => x.t).FirstOrDefault();
         }
 
