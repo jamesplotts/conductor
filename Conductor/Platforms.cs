@@ -16,10 +16,14 @@ namespace Conductor
     {
         // Whether the last StopAt chose a siding, for the status line.
         public static bool LastWasSiding;
+        // How the last StopAt chose its spot, for the log while chasing stops that miss the platform.
+        public static string LastWhy = "";
+        private static string P(Graph g, Location l) { Vector3 v = g.GetPosition(l); return $"{l.segment?.id}|{l.end}|{l.distance:0.0} ({v.x:0},{v.z:0})"; }
 
         public static Location? StopAt(PassengerStop stop, BaseLocomotive loco, bool preferSiding)
         {
             LastWasSiding = false;
+            LastWhy = "";
             List<TrackSpan> spans = stop.TrackSpans.Where(s => s != null && s.lower.HasValue && s.upper.HasValue).ToList();
             if (spans.Count == 0)
                 return null;
@@ -41,6 +45,8 @@ namespace Conductor
             // by the diverging route), the longest of those. With one platform track, that one.
             TrackSpan longest = spans.Count == 1 ? spans[0]
                 : spans.OrderBy(s => Siding(graph, s)?.Score ?? 0).ThenByDescending(s => s.Length).First();
+            LastWhy = $"{spans.Count} platform track(s); using {P(graph, longest.lower.Value)} to {P(graph, longest.upper.Value)}, {longest.Length:0} m; "
+                + $"train {length:0} m, ends {P(graph, train[0].LocationFor(Car.LogicalEnd.A))} and {P(graph, train[train.Count - 1].LocationFor(Car.LogicalEnd.B))}; ";
             return Alongside(graph, stop, longest, Trailing(graph, train, longest.GetCenterPoint()), length, Overshoot(graph, train, longest.GetCenterPoint()));
         }
 
@@ -51,8 +57,12 @@ namespace Conductor
         {
             Location farEnd = FarEnd(graph, span, trailing, overshoot);
             Vector3? depot = Depot(stop);
+            LastWhy += $"trailing end at ({trailing.x:0},{trailing.z:0}), overshoot {overshoot:0} m, far-end spot {P(graph, farEnd)}; ";
             if (!depot.HasValue)
+            {
+                LastWhy += "no station building loaded, so the far end";
                 return farEnd;
+            }
             Location lower = span.lower.Value, upper = span.upper.Value;
             bool upperFar = Fuel.Flat(graph.GetPosition(upper), trailing) >= Fuel.Flat(graph.GetPosition(lower), trailing);
             Location far = upperFar ? upper : lower, near = upperFar ? lower : upper;
@@ -71,18 +81,28 @@ namespace Conductor
                     best = d;
                 }
             }
+            LastWhy += $"far end {P(graph, far)}, near end {P(graph, near)}; building ({depot.Value.x:0},{depot.Value.z:0}), nearest at {best:0} m from the near end, {bestGap:0} m off; ";
             if (best < 0f || bestGap > 150f)
+            {
+                LastWhy += "building too far, so the far end";
                 return farEnd;
+            }
             float coaches = Mathf.Max(0f, length - overshoot);
             float inset = Mathf.Min(5f, total / 4f);
             float farMost = total - inset + Mathf.Min(overshoot, RoomPast(graph, far, near, overshoot));
             // The engine end goes this far along: the coaches' middle at the building, but the whole
             // train on the platform track where it fits, and never past the far end.
             float target = Mathf.Max(best + coaches / 2f + overshoot, Mathf.Min(inset + coaches + overshoot, farMost));
+            LastWhy += $"target {target:0} m along of {total:0} (far-most {farMost:0}); ";
             if (target >= farMost)
+            {
+                LastWhy += "past the far-most, so the far end";
                 return farEnd;
+            }
             Location spot = graph.LocationByMoving(from, target, false, true);
-            return onSpan.Contains(spot.segment) || target > total ? spot : farEnd;
+            bool use = onSpan.Contains(spot.segment) || target > total;
+            LastWhy += use ? $"spot {P(graph, spot)}" : $"spot {P(graph, spot)} off the platform track, so the far end";
+            return use ? spot : farEnd;
         }
 
         private static readonly AccessTools.FieldRef<StationAgent, PassengerStop> AgentStop =
@@ -187,12 +207,14 @@ namespace Conductor
             Location far = upperFar ? upper : lower, near = upperFar ? lower : upper;
             float inset = Mathf.Min(5f, span.Length / 4f);
             overshoot = Mathf.Min(overshoot, RoomPast(graph, far, near, overshoot));
-            // Short of the end of the track (a terminus's bumper), which the Auto Engineer won't go past anyway.
-            return graph.LocationByMoving(graph.LocationOrientedToward(far, near), inset - overshoot, false, true);
+            // Past the end by the overshoot where there's room; otherwise just short of the end of the
+            // track (a terminus's bumper), which the Auto Engineer won't go past anyway.
+            return graph.LocationByMoving(graph.LocationOrientedToward(far, near), overshoot > 0f ? -overshoot : inset, false, true);
         }
 
-        // How far the engine can run on past the far end of a platform track, up to `max`: not over a
-        // switch beyond it (it would go wherever the switch is set, into a spur say), stopping clear of it.
+        // How far the engine can run on past the far end of a platform track, up to `max`. Up to a
+        // switch whose points face the train, but not over it (it would go wherever the switch is set,
+        // into a spur say). Through one it meets from a leg, which can only lead on to the one track.
         private static float RoomPast(Graph graph, Location far, Location near, float max)
         {
             if (max <= 0f)
@@ -210,8 +232,8 @@ namespace Conductor
                 if (at.segment != last)
                 {
                     TrackNode node = last.a == at.segment.a || last.a == at.segment.b ? last.a : last.b;
-                    if (graph.IsSwitch(node))
-                        return Mathf.Clamp(d - 2f - Wyes.Clearance, 0f, max);
+                    if (graph.IsSwitch(node) && graph.DecodeSwitchAt(node, out TrackSegment enter, out _, out _) && last == enter)
+                        return Mathf.Clamp(d - 4f, 0f, max);
                     last = at.segment;
                 }
             }

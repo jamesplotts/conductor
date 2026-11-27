@@ -456,8 +456,21 @@ namespace Conductor
                 return;
             }
             // Stopped short (aimed at the wrong end, a switch against it, a car in the way): try again, then give up.
+            {
+                List<Car> cars = loco.EnumerateCoupled().ToList();
+                Graph g = Graph.Shared;
+                Vector3 ea = g.GetPosition(cars[0].LocationFor(Car.LogicalEnd.A)), eb = g.GetPosition(cars[cars.Count - 1].LocationFor(Car.LogicalEnd.B));
+                Journal.Warning($"Conductor: {loco.DisplayName} stopped short of {station.Name}'s platform (try {plan.Tries + 1}); train ends ({ea.x:0},{ea.z:0}) and ({eb.x:0},{eb.z:0}), last waypoint {plan.Sent}. How it was picked: {Platforms.LastWhy}");
+            }
             if (++plan.Tries > MaxTries)
             {
+                if (OverSpot(loco, plan.Sent))
+                {
+                    // It got where it was sent, as far as the track lets it, and still no coach is at the platform.
+                    End(loco, $"Stopped: at {station.Name} the engine can't run far enough past the platform for a coach to reach it. Pull the train in by hand.");
+                    Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} stopped at {station.Name}; the coaches can't reach the platform there.");
+                    return;
+                }
                 End(loco, $"Stopped: couldn't get into {station.Name}. Check the switches and the track ahead.");
                 Multiplayer.Broadcast($"Conductor: {Hyperlink.To(loco)} couldn't get into {station.Name} and has stopped.");
                 return;
@@ -1404,6 +1417,21 @@ namespace Conductor
         {
             TrackSpan span = stop.TrackSpans.FirstOrDefault(t => t != null);
             return span != null ? span.GetCenterPoint() : Vector3.zero;
+        }
+
+        // Whether a waypoint is under the train, which is where the Auto Engineer counts it reached.
+        private static bool OverSpot(BaseLocomotive loco, string sent)
+        {
+            try
+            {
+                Graph graph = Graph.Shared;
+                Vector3 spot = graph.GetPosition(graph.ResolveLocationString(sent));
+                return loco.EnumerateCoupled().Any(c => Fuel.Flat(graph.GetPosition(c.LocationF), spot) + Fuel.Flat(graph.GetPosition(c.LocationR), spot) < c.carLength + 2f);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
 
         // Whether the train is in at the station: a coach on the platform track, as the station

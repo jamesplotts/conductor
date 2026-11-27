@@ -38,6 +38,10 @@ Taking the Auto Engineer off waypoints stops Conductor for that train.
 
 ## Changelog
 
+### 0.2.4 (2026-11-26)
+- Fixed trains stopping with "couldn't get into" a station whose platform track is short with a switch just past it, such as Ela: the engine stopped clear of the switch with its coaches still off the platform, and Conductor kept retrying. The engine now runs on up to a switch whose points face it (not over them), and on through one it meets from a branch, so the coaches reach the platform.
+- When the coaches still can't reach a platform, Conductor says so instead of "couldn't get into", and Player.log notes why the Auto Engineer refused a route, for bug reports.
+
 ### 0.2.3 (2026-11-25)
 - Timetable Mode: at the end of a train, the engine takes up the next ticked train due away after that one was due in, so it works through the day's trains instead of running the first one again. Starting Conductor picks the next train due (or one up to 30 minutes late), not one that already ran.
 - Use Station Sidings off now really keeps the train on the main line at stations with a passing siding (it used to take the longest platform track, which could be the siding).
